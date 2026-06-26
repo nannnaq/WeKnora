@@ -6,7 +6,7 @@ services:
       context: ./frontend
     container_name: WeKnora-frontend
     ports:
-      - "${FRONTEND_PORT:-80}:80"
+      - "${FRONTEND_PORT:-9711}:80"
     environment:
       - MAX_FILE_SIZE_MB=${MAX_FILE_SIZE_MB:-50}
       - APP_HOST=${APP_HOST:-app}
@@ -33,7 +33,7 @@ services:
         - APK_MIRROR_ARG=${APK_MIRROR_ARG:-}
     container_name: WeKnora-app
     ports:
-      - "${APP_PORT:-8080}:8080"
+      - "${APP_PORT:-9712}:8080"
     volumes:
       - data-files:/data/files
       - docreader-tmp:/tmp/docreader:ro
@@ -341,11 +341,11 @@ services:
     # Bind to loopback by default; override SEARXNG_BIND=0.0.0.0 only after
     # rotating SEARXNG_SECRET and (optionally) re-enabling limiter in settings.yml.
     ports:
-      - "${SEARXNG_BIND:-127.0.0.1}:${SEARXNG_PORT:-8888}:8080"
+      - "${SEARXNG_BIND:-127.0.0.1}:${SEARXNG_PORT:-9713}:8080"
     volumes:
       - searxng_config:/etc/searxng
     environment:
-      - SEARXNG_BASE_URL=http://localhost:${SEARXNG_PORT:-8888}/
+      - SEARXNG_BASE_URL=http://localhost:${SEARXNG_PORT:-9713}/
       - INSTANCE_NAME=weknora-searxng
       # Default value lets `docker compose --profile searxng up` work zero-config.
       # Override via .env (e.g. `openssl rand -hex 32`) before exposing the
@@ -372,8 +372,8 @@ services:
     image: minio/minio:RELEASE.2025-09-07T16-13-09Z
     container_name: WeKnora-minio
     ports:
-      - "${MINIO_PORT:-9000}:9000"
-      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+      - "${MINIO_PORT:-9714}:9000"
+      - "${MINIO_CONSOLE_PORT:-9715}:9001"
     environment:
       - MINIO_ROOT_USER=${MINIO_ACCESS_KEY_ID:-minioadmin}
       - MINIO_ROOT_PASSWORD=${MINIO_SECRET_ACCESS_KEY:-minioadmin}
@@ -403,8 +403,8 @@ services:
       - NEO4J_apoc_import_file_use__neo4j__config=true
       - NEO4JLABS_PLUGINS=["apoc"]
     ports:
-      - "7474:7474"
-      - "7687:7687"
+      - "${NEO4J_HTTP_HOST_PORT:-9716}:7474"
+      - "${NEO4J_BOLT_HOST_PORT:-9717}:7687"
     restart: always
     networks:
       - WeKnora-network
@@ -416,8 +416,8 @@ services:
     image: qdrant/qdrant:v1.16.2
     container_name: WeKnora-qdrant
     ports:
-      - "${QDRANT_REST_PORT:-6333}:6333"
-      - "${QDRANT_PORT:-6334}:6334"
+      - "${QDRANT_REST_PORT:-9718}:6333"
+      - "${QDRANT_GRPC_HOST_PORT:-9719}:6334"
     volumes:
       - qdrant_data:/qdrant/storage
     networks:
@@ -445,8 +445,8 @@ services:
       timeout: 20s
       retries: 3
     ports:
-      - "19530:19530"
-      - "9091:9091"
+      - "${MILVUS_HOST_PORT:-9720}:19530"
+      - "${MILVUS_HEALTH_HOST_PORT:-9721}:9091"
     volumes:
       - milvus_data:/var/lib/milvus
     networks:
@@ -468,8 +468,8 @@ services:
       - CLUSTER_DATA_BIND_PORT=7001
       - RAFT_BOOTSTRAP_EXPECT=1
     ports:
-      - "9035:8080"
-      - "50052:50051"
+      - "${WEAVIATE_HTTP_HOST_PORT:-9722}:8080"
+      - "${WEAVIATE_GRPC_HOST_PORT:-9723}:50051"
     volumes:
       - weaviate_data:/var/lib/weaviate
     networks:
@@ -502,8 +502,8 @@ services:
       - FE_SERVERS=fe1:doris-fe:9010
       - FE_ID=1
     ports:
-      - "${DORIS_FE_HTTP_PORT:-8030}:8030"
-      - "${DORIS_FE_MYSQL_PORT:-9030}:9030"
+      - "${DORIS_FE_HTTP_PORT:-9724}:8030"
+      - "${DORIS_FE_MYSQL_PORT:-9725}:9030"
     volumes:
       - doris_fe_meta:/opt/apache-doris/fe/doris-meta
       - doris_fe_log:/opt/apache-doris/fe/log
@@ -523,7 +523,7 @@ services:
     depends_on:
       - doris-fe
     ports:
-      - "${DORIS_BE_HTTP_PORT:-8040}:8040"
+      - "${DORIS_BE_HTTP_PORT:-9726}:8040"
     volumes:
       - doris_be_storage:/opt/apache-doris/be/storage
       - doris_be_log:/opt/apache-doris/be/log
@@ -537,7 +537,7 @@ services:
     image: dexidp/dex:latest
     container_name: dex
     ports:
-      - "5556:5556"
+      - "${DEX_HOST_PORT:-9727}:5556"
     volumes:
       - ./misc/dex-config.yaml:/etc/dex/config.yaml
     command: ["dex", "serve", "/etc/dex/config.yaml"]
@@ -556,7 +556,7 @@ services:
   # 启用方式：
   #   docker compose --profile langfuse up -d
   # 启用后：
-  #   1. Langfuse UI: http://localhost:3000 （首次访问注册管理员并在 Settings → API Keys 生成 key）
+  #   1. Langfuse UI: http://localhost:9730 （首次访问注册管理员并在 Settings → API Keys 生成 key）
   #   2. 在 .env 里把 LANGFUSE_HOST 改成 http://langfuse-web:3000（容器间通信）
   #      并填入刚生成的 LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY
   #   3. 重启 app 容器：docker compose up -d app
@@ -633,10 +633,10 @@ services:
       MINIO_ROOT_USER: ${LANGFUSE_MINIO_USER:-langfuseminio}
       MINIO_ROOT_PASSWORD: ${LANGFUSE_MINIO_PASSWORD:-langfuseminiosecret}
     ports:
-      # 9100：S3 API（浏览器上传媒体时会直连此端口，必须对外暴露）
-      - "${LANGFUSE_MINIO_S3_PORT:-9100}:9000"
-      # 9101：MinIO 控制台（可选，方便排障）
-      - "${LANGFUSE_MINIO_CONSOLE_PORT:-9101}:9001"
+      # 9728：S3 API（浏览器上传媒体时会直连此端口，必须对外暴露）
+      - "${LANGFUSE_MINIO_S3_PORT:-9728}:9000"
+      # 9729：MinIO 控制台（可选，方便排障）
+      - "${LANGFUSE_MINIO_CONSOLE_PORT:-9729}:9001"
     volumes:
       - langfuse_minio_data:/data
     healthcheck:
@@ -692,7 +692,7 @@ services:
       #   ENCRYPTION_KEY: openssl rand -hex 32
       SALT: ${LANGFUSE_SALT:-weknora-langfuse-dev-salt-change-me}
       ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:-0000000000000000000000000000000000000000000000000000000000000000}
-      NEXTAUTH_URL: ${LANGFUSE_NEXTAUTH_URL:-http://localhost:3000}
+      NEXTAUTH_URL: ${LANGFUSE_NEXTAUTH_URL:-http://localhost:9730}
       NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:-weknora-langfuse-dev-nextauth-secret-change-me}
       TELEMETRY_ENABLED: ${LANGFUSE_TELEMETRY_ENABLED:-false}
       LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: "false"
@@ -712,8 +712,8 @@ services:
       LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
       LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: ${LANGFUSE_MINIO_USER:-langfuseminio}
       LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${LANGFUSE_MINIO_PASSWORD:-langfuseminiosecret}
-      # 媒体上传用的外部 endpoint（浏览器直连），默认指向宿主机映射的 9100 端口
-      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: ${LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT:-http://localhost:9100}
+      # 媒体上传用的外部 endpoint（浏览器直连），默认指向宿主机映射的 9728 端口
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: ${LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT:-http://localhost:9728}
       LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
       LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: media/
     networks:
@@ -728,7 +728,7 @@ services:
     restart: unless-stopped
     depends_on: *langfuse-depends-on
     ports:
-      - "${LANGFUSE_WEB_PORT:-3000}:3000"
+      - "${LANGFUSE_WEB_PORT:-9730}:3000"
     # 同样走 wrapper entrypoint，末尾写死 web 的原始启动命令（见镜像 Dockerfile 的 CMD）
     entrypoint:
       - /bin/sh
@@ -769,7 +769,7 @@ services:
       context: ./mcp-server
     container_name: WeKnora-mcp
     ports:
-      - "${MCP_PORT:-8082}:8000"
+      - "${MCP_PORT:-9731}:8000"
     environment:
       - WEKNORA_BASE_URL=http://app:8080/api/v1
       - WEKNORA_API_KEY=${WEKNORA_API_KEY:-}

@@ -23,13 +23,14 @@
 | PUT    | `/knowledge/image/:id/:chunk_id`           | 更新分块图像信息                           |
 | PUT    | `/knowledge/tags`                          | 批量更新知识标签                           |
 | GET    | `/knowledge/search`                        | 跨知识库搜索/过滤知识                      |
+| POST   | `/knowledge/batch-reparse`                 | 同一知识库内批量重新解析知识（异步任务）   |
 | POST   | `/knowledge/batch-delete`                  | 同一知识库内批量删除知识（异步任务）       |
 | POST   | `/knowledge/move`                          | 迁移知识到另一知识库（异步任务）           |
 | GET    | `/knowledge/move/progress/:task_id`        | 查询知识迁移任务进度                       |
 
 > **公共说明**：
 > - 路径中的 `:id`（知识库路径下）为**知识库 ID**，`/knowledge/:id` 中的 `:id` 为**知识 ID**。
-> - 所有写操作（创建、更新、删除、迁移、重新解析、取消解析）需要当前用户在知识库所属组织内具有 `editor` 或 `admin` 权限；清空知识库内容仅 KB **所有者**（admin 且租户匹配）可操作。
+> - 所有写操作（创建、更新、删除、迁移、重新解析、取消解析）需要当前用户在知识库所属组织内具有 `editor` 或 `admin` 权限；清空知识库内容仅 KB **所有者**（admin 且空间匹配）可操作。
 > - 关键状态字段：`parse_status` 取值 `pending` / `processing` / `finalizing` / `completed` / `failed` / `cancelled`；`enable_status` 取值 `enabled` / `disabled`。
 > - `processing` 指 DocReader / 分块 / 向量化阶段；`finalizing` 指主解析已完成、仍在执行摘要 / 问题生成 / 图谱抽取等索引优化任务；只有当全部子任务到达终态后才进入 `completed`。
 > - `cancelled` 表示解析被用户主动取消，可通过 `reparse` 重新触发。`pending` / `processing` / `finalizing` 这三种状态都可通过 `cancel-parse` 终止。
@@ -325,7 +326,7 @@ curl --location 'http://localhost:8080/api/v1/knowledge-bases/kb-00000001/knowle
 
 ## DELETE `/knowledge-bases/:id/knowledge` - 清空知识库下的所有知识
 
-异步提交"清空任务"，删除该知识库下的全部知识条目；知识库本身保留。**仅 KB 所有者（admin 且租户匹配）可操作**。
+异步提交"清空任务"，删除该知识库下的全部知识条目；知识库本身保留。**仅 KB 所有者（admin 且空间匹配）可操作**。
 
 **请求**:
 
@@ -363,8 +364,8 @@ curl --location --request DELETE 'http://localhost:8080/api/v1/knowledge-bases/k
 | 字段        | 类型     | 必填 | 说明                                                                  |
 | ----------- | -------- | ---- | --------------------------------------------------------------------- |
 | `ids`       | string[] | 是   | 知识 ID，重复 `ids=...` 传多个                                        |
-| `kb_id`     | string   | 否   | 限定知识库范围；共享知识库场景下用于按 KB 校验权限并解析有效租户       |
-| `agent_id`  | string   | 否   | 共享 Agent ID；按 Agent 所属租户拉取，常用于共享场景刷新后的文件回填   |
+| `kb_id`     | string   | 否   | 限定知识库范围；共享知识库场景下用于按 KB 校验权限并解析有效空间       |
+| `agent_id`  | string   | 否   | 共享 Agent ID；按 Agent 所属空间拉取，常用于共享场景刷新后的文件回填   |
 
 **请求**:
 
@@ -729,7 +730,7 @@ curl --location --request PUT 'http://localhost:8080/api/v1/knowledge/tags' \
 
 ## GET `/knowledge/search` - 跨知识库搜索/过滤知识
 
-按关键词在当前租户（含已共享给当前租户）的知识中检索；可按文件类型过滤；指定 `agent_id` 时按共享 Agent 所配置的知识库范围检索。
+按关键词在当前空间（含已共享给当前空间）的知识中检索；可按文件类型过滤；指定 `agent_id` 时按共享 Agent 所配置的知识库范围检索。
 
 **查询参数**:
 
@@ -782,6 +783,50 @@ curl --location --get 'http://localhost:8080/api/v1/knowledge/search' \
 
 `agent_id=...&` 且该 Agent 的 KB 选择模式为 `none` 时，将直接返回 `data: []` 与 `has_more: false`。
 
+## POST `/knowledge/batch-reparse` - 同一知识库内批量重新解析
+
+按 ID 列表在单个知识库内批量重新解析知识（异步任务）。单次最多 200 个 ID；服务侧会校验所有 ID 存在并属于同一 `kb_id`。
+
+**请求体**:
+
+| 字段             | 类型     | 必填 | 说明                                             |
+| ---------------- | -------- | ---- | ------------------------------------------------ |
+| `kb_id`          | string   | 是   | 目标知识库 ID                                    |
+| `ids`            | string[] | 是   | 待重新解析的知识 ID 列表（≤ 200）                |
+| `process_config` | object   | 否   | 本批次共用的处理配置覆盖；省略时沿用各知识原配置 |
+
+**请求**:
+
+```curl
+curl --location 'http://localhost:8080/api/v1/knowledge/batch-reparse' \
+--header 'X-API-Key: sk-xxxxx' \
+--header 'Content-Type: application/json' \
+--data '{
+    "kb_id": "kb-00000001",
+    "ids": [
+        "4c4e7c1a-09cf-485b-a7b5-24b8cdc5acf5",
+        "9c8af585-ae15-44ce-8f73-45ad18394651"
+    ]
+}'
+```
+
+**响应**:
+
+```json
+{
+    "success": true,
+    "message": "Batch reparse task submitted",
+    "data": {
+        "task_id": "a1b2c3d4",
+        "reparse_count": 2
+    }
+}
+```
+
+HTTP 成功表示批处理包装任务已入队。后台会尝试提交列表中的每个知识；单项提交失败时，该知识会进入 `failed` 状态并保留错误信息，批处理任务也会在运行队列中标记失败。为避免重复清理已成功提交的知识，出现部分失败后不会自动重试整个批次；可筛选失败知识后再次批量重新解析。
+
+任一 ID 不属于 `kb_id` 或不存在时，返回 400 并整批拒绝。
+
 ## POST `/knowledge/batch-delete` - 同一知识库内批量删除
 
 按 ID 列表在单个知识库内批量删除知识（异步任务）。单次最多 200 个 ID；服务侧会校验所有 ID 属于同一 `kb_id`。
@@ -827,7 +872,7 @@ curl --location 'http://localhost:8080/api/v1/knowledge/batch-delete' \
 
 将一条或多条**处于 `completed` 状态**的知识从源 KB 迁到目标 KB（异步）。约束：
 
-- 源/目标 KB 必须属于当前租户；
+- 源/目标 KB 必须属于当前空间；
 - 源/目标必须为同一 KB 类型且**使用相同的 Embedding 模型**；
 - 源 KB ≠ 目标 KB；
 - 仅 `parse_status=completed` 的知识可迁移。

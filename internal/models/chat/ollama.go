@@ -95,6 +95,7 @@ func (c *OllamaChat) buildChatRequest(messages []Message, opts *ChatOptions, isS
 		Messages: c.convertMessages(messages),
 		Stream:   &streamFlag,
 		Options:  make(map[string]interface{}),
+		Think:    &ollamaapi.ThinkValue{Value: false},
 	}
 
 	// 添加可选参数

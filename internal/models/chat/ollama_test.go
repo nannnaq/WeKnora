@@ -8,6 +8,37 @@ import (
 	secutils "github.com/Tencent/WeKnora/internal/utils"
 )
 
+func TestBuildChatRequestDisablesThinkingByDefault(t *testing.T) {
+	chat := &OllamaChat{modelName: "qwen3.6:27b"}
+
+	req := chat.buildChatRequest([]Message{{Role: "user", Content: "hello"}}, nil, false)
+
+	if req.Think == nil {
+		t.Fatal("buildChatRequest omitted think; want explicit false")
+	}
+	if enabled, ok := req.Think.Value.(bool); !ok || enabled {
+		t.Fatalf("buildChatRequest think = %#v; want false", req.Think.Value)
+	}
+}
+
+func TestBuildChatRequestHonorsExplicitThinking(t *testing.T) {
+	chat := &OllamaChat{modelName: "qwen3.6:27b"}
+	thinking := true
+
+	req := chat.buildChatRequest(
+		[]Message{{Role: "user", Content: "hello"}},
+		&ChatOptions{Thinking: &thinking},
+		false,
+	)
+
+	if req.Think == nil {
+		t.Fatal("buildChatRequest omitted explicit think value")
+	}
+	if enabled, ok := req.Think.Value.(bool); !ok || !enabled {
+		t.Fatalf("buildChatRequest think = %#v; want true", req.Think.Value)
+	}
+}
+
 func TestResolveImageForOllamaRejectsInternalURL(t *testing.T) {
 	t.Setenv("SSRF_WHITELIST", "")
 	secutils.ResetSSRFWhitelistForTest()

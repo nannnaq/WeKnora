@@ -24,6 +24,9 @@ builtin_agents:
         description: "지식 베이스 RAG Q&A를 통한 빠르고 정확한 답변"
     config:
       agent_mode: "quick-answer"
+      model_id: "builtin-qwen-chat"
+      vlm_model_id: "builtin-qwen-vlm"
+      thinking: false
       system_prompt_id: "default_kb"
       context_template_id: "default_context"
       temperature: 0.7
@@ -67,6 +70,9 @@ builtin_agents:
         description: "ReAct 추론 프레임워크, 다단계 사고 및 도구 호출 지원"
     config:
       agent_mode: "smart-reasoning"
+      model_id: "builtin-qwen-chat"
+      vlm_model_id: "builtin-qwen-vlm"
+      thinking: false
       agent_type: "rag-qa"
       system_prompt: ""
       temperature: 0.7
@@ -115,6 +121,9 @@ builtin_agents:
         description: "CSV/Excel 파일에 대한 SQL 쿼리 및 통계 분석을 지원하는 전문 데이터 분석 에이전트"
     config:
       agent_mode: "smart-reasoning"
+      model_id: "builtin-qwen-chat"
+      vlm_model_id: "builtin-qwen-vlm"
+      thinking: false
       agent_type: "data-analysis"
       system_prompt_id: "data_analyst"
       temperature: 0.3
@@ -160,6 +169,9 @@ builtin_agents:
         description: "위키 지식 베이스에서 답변하는 데 특화된 에이전트"
     config:
       agent_mode: "smart-reasoning"
+      model_id: "builtin-qwen-chat"
+      vlm_model_id: "builtin-qwen-vlm"
+      thinking: false
       agent_type: "wiki-qa"
       system_prompt_id: "wiki_researcher"
       temperature: 0.7
@@ -204,6 +216,9 @@ builtin_agents:
         description: "검사 문제를 기반으로 Wiki 페이지를 修復하고 最適化하는 전용 에이전트"
     config:
       agent_mode: "smart-reasoning"
+      model_id: "builtin-qwen-chat"
+      vlm_model_id: "builtin-qwen-vlm"
+      thinking: false
       agent_type: "custom"
       system_prompt_id: "wiki_fixer"
       temperature: 0.7
@@ -232,4 +247,3 @@ builtin_agents:
       vector_threshold: 0.5
       rerank_top_k: 10
       rerank_threshold: 0.3
-

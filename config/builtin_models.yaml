@@ -1,15 +1,27 @@
 builtin_models:
   - id: builtin-qwen-chat
-    name: ${QWEN_CHAT_MODEL}
+    name: ${QWEN_MULTIMODAL_MODEL}
     type: KnowledgeQA
-    source: remote
-    description: 默认 Qwen 对话模型（DashScope OpenAI 兼容模式）
+    source: local
+    description: 默认 Qwen 多模态对话模型（远程 Ollama）
     is_default: true
     status: active
     parameters:
-      base_url: ${QWEN_BASE_URL}
-      api_key: ${QWEN_API_KEY}
-      provider: aliyun
+      base_url: ${OLLAMA_BASE_URL}
+      interface_type: ollama
+      supports_vision: true
+
+  - id: builtin-qwen-vlm
+    name: ${QWEN_MULTIMODAL_MODEL}
+    type: VLLM
+    source: local
+    description: 默认 Qwen 视觉模型（远程 Ollama）
+    is_default: true
+    status: active
+    parameters:
+      base_url: ${OLLAMA_BASE_URL}
+      interface_type: ollama
+      supports_vision: true
 
   - id: builtin-qwen-embedding
     name: ${QWEN_EMBEDDING_MODEL}
@@ -37,27 +49,3 @@ builtin_models:
       base_url: ${QWEN_RERANK_BASE_URL}
       api_key: ${QWEN_API_KEY}
       provider: aliyun
-
-  - id: builtin-deepseek-chat
-    name: ${DEEPSEEK_CHAT_MODEL}
-    type: KnowledgeQA
-    source: remote
-    description: DeepSeek Chat 模型
-    is_default: false
-    status: active
-    parameters:
-      base_url: ${DEEPSEEK_BASE_URL}
-      api_key: ${DEEPSEEK_API_KEY}
-      provider: deepseek
-
-  - id: builtin-deepseek-reasoner
-    name: ${DEEPSEEK_REASONER_MODEL}
-    type: KnowledgeQA
-    source: remote
-    description: DeepSeek Reasoner 模型
-    is_default: false
-    status: active
-    parameters:
-      base_url: ${DEEPSEEK_BASE_URL}
-      api_key: ${DEEPSEEK_API_KEY}
-      provider: deepseek

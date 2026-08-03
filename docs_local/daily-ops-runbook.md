@@ -57,13 +57,7 @@ docker compose --profile full pull
 docker compose --profile full up -d
 ```
 
-不要随便执行：
 
-```bash
-docker compose down -v
-```
-
-`-v` 会删除数据库、MinIO、Qdrant、Neo4j、Langfuse 等数据卷，只有确认要清空环境时才用。
 
 ## 3. 修改代码后怎么重启
 

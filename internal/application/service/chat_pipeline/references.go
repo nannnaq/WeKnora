@@ -25,7 +25,7 @@ func prepareMessagesWithModelContext(
 	if len(messages) > 0 {
 		messages[0].Content = strings.TrimRight(messages[0].Content, " \t\r\n") + registry.ProtocolPrompt()
 	}
-	if len(chatManage.MergeResult) == 0 || len(messages) == 0 {
+	if len(messages) == 0 {
 		return messages, registry
 	}
 
@@ -78,21 +78,53 @@ func prepareMessagesWithModelContext(
 		}))
 	}
 	modelContexts := strings.Join(contextParts, "\n")
-	if strings.TrimSpace(modelContexts) == "" {
+	realtimeContext := strings.TrimSpace(chatManage.RealtimeContext)
+	combinedParts := make([]string, 0, 2)
+	if strings.TrimSpace(modelContexts) != "" {
+		combinedParts = append(combinedParts, modelContexts)
+	}
+	if realtimeContext != "" {
+		combinedParts = append(combinedParts, realtimeContext)
+	}
+	combinedContexts := strings.Join(combinedParts, "\n\n")
+	if combinedContexts == "" {
 		return messages, registry
 	}
 
 	last := len(messages) - 1
 	replaced := false
-	for _, index := range []int{0, last} {
+	realtimeInjected := false
+	injectionTarget := ""
+	for _, target := range []struct {
+		index int
+		name  string
+	}{{index: 0, name: "system"}, {index: last, name: "user"}} {
+		index := target.index
 		if chatManage.RenderedContexts != "" && strings.Contains(messages[index].Content, chatManage.RenderedContexts) {
-			messages[index].Content = strings.ReplaceAll(messages[index].Content, chatManage.RenderedContexts, modelContexts)
+			if realtimeContext != "" && !realtimeInjected {
+				messages[index].Content = strings.Replace(messages[index].Content, chatManage.RenderedContexts, combinedContexts, 1)
+				messages[index].Content = strings.ReplaceAll(messages[index].Content, chatManage.RenderedContexts, modelContexts)
+				realtimeInjected = true
+				injectionTarget = target.name
+			} else {
+				messages[index].Content = strings.ReplaceAll(messages[index].Content, chatManage.RenderedContexts, modelContexts)
+			}
 			replaced = true
 		}
 	}
 	if !replaced {
-		messages[last].Content = modelContexts + "\n\n" + messages[last].Content
+		messages[last].Content = combinedContexts + "\n\n" + messages[last].Content
+		if realtimeContext != "" {
+			realtimeInjected = true
+			injectionTarget = "user_fallback"
+		}
 	}
+	pipelineInfo(ctx, "ModelContext", "prepared", map[string]interface{}{
+		"injection_target":     injectionTarget,
+		"knowledge_result_cnt": len(knowledgeRows) + len(webRows),
+		"realtime_context_len": len(realtimeContext),
+		"realtime_injected":    realtimeInjected,
+	})
 	return messages, registry
 }
 

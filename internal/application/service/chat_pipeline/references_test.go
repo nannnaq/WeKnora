@@ -71,6 +71,97 @@ func TestPrepareMessagesWithModelContextReplacesSystemPromptContextAndHistoryCit
 	require.NotContains(t, messages[2].Content, "old-chunk")
 }
 
+func TestPrepareMessagesWithModelContextKeepsRealtimeEvidenceWithKnowledgeResults(t *testing.T) {
+	live := `<realtime_evidence><effective_rule_sets>active rules</effective_rule_sets></realtime_evidence>`
+	retrieved := `<context id="1">stored content</context>`
+	rendered := live + "\n" + retrieved
+	manage := &types.ChatManage{
+		PipelineRequest: types.PipelineRequest{
+			Query: "现在的交战规则是什么？",
+			SummaryConfig: types.SummaryConfig{
+				Prompt: `System references: {{contexts}}`,
+			},
+		},
+		PipelineState: types.PipelineState{
+			RealtimeContext:   live,
+			RealtimeAttempted: true,
+			RealtimeUsable:    true,
+			RenderedContexts:  rendered,
+			UserContent:       "现在的交战规则是什么？",
+			MergeResult: []*types.SearchResult{{
+				ID: "chunk-1", KnowledgeID: "doc-1", KnowledgeBaseID: "kb-1", KnowledgeTitle: "Stored document", Content: "stored content",
+			}},
+		},
+	}
+
+	messages, _ := prepareMessagesWithModelContext(context.Background(), manage)
+	require.Len(t, messages, 2)
+	require.Contains(t, messages[0].Content, `<chunk id="c1"`)
+	require.Contains(t, messages[0].Content, "active rules")
+	require.Equal(t, 1, strings.Count(messages[0].Content, "<realtime_evidence>"))
+	require.Less(t,
+		strings.Index(messages[0].Content, `<chunk id="c1"`),
+		strings.Index(messages[0].Content, "<realtime_evidence>"),
+	)
+}
+
+func TestPrepareMessagesWithModelContextFallsBackWhenTemplatesOmitContexts(t *testing.T) {
+	live := `<realtime_evidence><effective_rule_sets>active rules</effective_rule_sets></realtime_evidence>`
+	manage := &types.ChatManage{
+		PipelineRequest: types.PipelineRequest{
+			Query: "现在的交战规则是什么？",
+			SummaryConfig: types.SummaryConfig{
+				Prompt: "Custom system prompt without a contexts placeholder",
+			},
+		},
+		PipelineState: types.PipelineState{
+			RealtimeContext:   live,
+			RealtimeAttempted: true,
+			RealtimeUsable:    true,
+			RenderedContexts:  live,
+			UserContent:       "现在的交战规则是什么？",
+		},
+	}
+
+	messages, _ := prepareMessagesWithModelContext(context.Background(), manage)
+	require.Len(t, messages, 2)
+	require.NotContains(t, messages[0].Content, "active rules")
+	require.Contains(t, messages[1].Content, "active rules")
+	require.True(t, strings.HasSuffix(messages[1].Content, "现在的交战规则是什么？"))
+}
+
+func TestPrepareMessagesWithModelContextInjectsRealtimeEvidenceOnlyOnce(t *testing.T) {
+	live := `<realtime_evidence><effective_rule_sets>active rules</effective_rule_sets></realtime_evidence>`
+	retrieved := `<context id="1">stored content</context>`
+	rendered := live + "\n" + retrieved
+	manage := &types.ChatManage{
+		PipelineRequest: types.PipelineRequest{
+			Query: "现在的交战规则是什么？",
+			SummaryConfig: types.SummaryConfig{
+				Prompt: `System references: {{contexts}}`,
+			},
+		},
+		PipelineState: types.PipelineState{
+			RealtimeContext:   live,
+			RealtimeAttempted: true,
+			RealtimeUsable:    true,
+			RenderedContexts:  rendered,
+			UserContent:       "User references: " + rendered,
+			MergeResult: []*types.SearchResult{{
+				ID: "chunk-1", KnowledgeID: "doc-1", KnowledgeBaseID: "kb-1", KnowledgeTitle: "Stored document", Content: "stored content",
+			}},
+		},
+	}
+
+	messages, _ := prepareMessagesWithModelContext(context.Background(), manage)
+	require.Len(t, messages, 2)
+	require.Contains(t, messages[0].Content, `<chunk id="c1"`)
+	require.Contains(t, messages[1].Content, `<chunk id="c1"`)
+	require.Equal(t, 1, strings.Count(messages[0].Content+messages[1].Content, "<realtime_evidence>"))
+	require.Contains(t, messages[0].Content, "active rules")
+	require.NotContains(t, messages[1].Content, "active rules")
+}
+
 func TestPrepareMessagesWithModelContextKeepsWebSeparateFromChunks(t *testing.T) {
 	manage := &types.ChatManage{
 		PipelineRequest: types.PipelineRequest{Query: "question", SummaryConfig: types.SummaryConfig{Prompt: "system"}},

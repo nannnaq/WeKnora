@@ -24,6 +24,25 @@ type minioFileService struct {
 	bucketName string
 }
 
+type temporaryMinioInitializationError struct {
+	err error
+}
+
+func (e *temporaryMinioInitializationError) Error() string { return e.err.Error() }
+func (e *temporaryMinioInitializationError) Unwrap() error { return e.err }
+func (e *temporaryMinioInitializationError) Timeout() bool { return false }
+func (e *temporaryMinioInitializationError) Temporary() bool {
+	return true
+}
+
+func wrapMinioInitializationError(err error) error {
+	response := minio.ToErrorResponse(err)
+	if response.StatusCode == 429 || response.StatusCode >= 500 {
+		return &temporaryMinioInitializationError{err: err}
+	}
+	return err
+}
+
 // newMinioClient creates a bare minioFileService with just the SDK client initialised.
 // Shared by NewMinioFileService (which also ensures the bucket exists) and
 // CheckMinioConnectivity (read-only probe).
@@ -50,11 +69,11 @@ func NewMinioFileService(endpoint,
 
 	exists, err := svc.client.BucketExists(context.Background(), bucketName)
 	if err != nil {
-		return nil, fmt.Errorf("failed to check bucket: %w", err)
+		return nil, fmt.Errorf("failed to check bucket: %w", wrapMinioInitializationError(err))
 	}
 	if !exists {
 		if err = svc.client.MakeBucket(context.Background(), bucketName, minio.MakeBucketOptions{}); err != nil {
-			return nil, fmt.Errorf("failed to create bucket: %w", err)
+			return nil, fmt.Errorf("failed to create bucket: %w", wrapMinioInitializationError(err))
 		}
 	}
 

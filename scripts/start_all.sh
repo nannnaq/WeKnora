@@ -11,6 +11,7 @@ NC='\033[0m' # 无颜色
 # 获取项目根目录（脚本所在目录的上一级）
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 PROJECT_ROOT="$( cd "$SCRIPT_DIR/.." && pwd )"
+source "$SCRIPT_DIR/lib/storage_profiles.sh"
 
 # 版本信息
 VERSION="1.0.1" # 版本更新
@@ -352,6 +353,13 @@ start_docker() {
     # 读取.env文件
     source "$PROJECT_ROOT/.env"
     storage_type=${STORAGE_TYPE:-local}
+    local storage_profile_arg
+    local storage_profile_args=()
+    storage_profile_arg="$(weknora_storage_profile_args "$storage_type" "${MINIO_ENDPOINT:-}")"
+    if [ -n "$storage_profile_arg" ]; then
+        storage_profile_args=(--profile minio)
+        log_info "检测到本项目 MinIO 存储，自动启用 minio profile"
+    fi
     
     check_platform
     
@@ -364,11 +372,11 @@ start_docker() {
 	if [ "$NO_PULL" = true ]; then
 		# 不拉取镜像，使用本地镜像
 		log_info "跳过镜像拉取，使用本地镜像..."
-		PLATFORM=$PLATFORM "$DOCKER_COMPOSE_BIN" $DOCKER_COMPOSE_SUBCMD up --build -d
+		PLATFORM=$PLATFORM "$DOCKER_COMPOSE_BIN" $DOCKER_COMPOSE_SUBCMD "${storage_profile_args[@]}" up --build -d
 	else
 		# 拉取最新镜像
 		log_info "拉取最新镜像..."
-		PLATFORM=$PLATFORM "$DOCKER_COMPOSE_BIN" $DOCKER_COMPOSE_SUBCMD up --pull always -d
+		PLATFORM=$PLATFORM "$DOCKER_COMPOSE_BIN" $DOCKER_COMPOSE_SUBCMD "${storage_profile_args[@]}" up --pull always -d
 	fi
     if [ $? -ne 0 ]; then
         log_error "Docker容器启动失败"
@@ -379,7 +387,7 @@ start_docker() {
 
     # 显示容器状态
     log_info "当前容器状态:"
-	"$DOCKER_COMPOSE_BIN" $DOCKER_COMPOSE_SUBCMD ps
+	"$DOCKER_COMPOSE_BIN" $DOCKER_COMPOSE_SUBCMD "${storage_profile_args[@]}" ps
 
     # 预拉取Sandbox镜像（Agent Skills 执行所需，仅拉取不启动）
     ensure_sandbox_image

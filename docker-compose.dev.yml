@@ -84,6 +84,7 @@ services:
   minio:
     image: minio/minio:latest
     container_name: WeKnora-minio-dev
+    restart: "on-failure:3"
     ports:
       - "${MINIO_PORT:-9000}:9000"
       - "${MINIO_CONSOLE_PORT:-9001}:9001"

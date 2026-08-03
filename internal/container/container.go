@@ -906,12 +906,28 @@ func initRawFileService(_ *config.Config) (interfaces.FileService, error) {
 			os.Getenv("MINIO_BUCKET_NAME") == "" {
 			return nil, fmt.Errorf("missing MinIO configuration")
 		}
-		return file.NewMinioFileService(
-			os.Getenv("MINIO_ENDPOINT"),
-			os.Getenv("MINIO_ACCESS_KEY_ID"),
-			os.Getenv("MINIO_SECRET_ACCESS_KEY"),
-			os.Getenv("MINIO_BUCKET_NAME"),
-			strings.EqualFold(os.Getenv("MINIO_USE_SSL"), "true"),
+		return retryInitialization(
+			context.Background(),
+			func() (interfaces.FileService, error) {
+				return file.NewMinioFileService(
+					os.Getenv("MINIO_ENDPOINT"),
+					os.Getenv("MINIO_ACCESS_KEY_ID"),
+					os.Getenv("MINIO_SECRET_ACCESS_KEY"),
+					os.Getenv("MINIO_BUCKET_NAME"),
+					strings.EqualFold(os.Getenv("MINIO_USE_SSL"), "true"),
+				)
+			},
+			isTransientNetworkError,
+			waitForInitializationRetry,
+			func(attempt int, delay time.Duration, err error) {
+				logger.Warnf(
+					context.Background(),
+					"[StorageInit] MinIO unavailable (attempt=%d): %v; retrying in %s",
+					attempt,
+					err,
+					delay,
+				)
+			},
 		)
 	case "cos":
 		if os.Getenv("COS_BUCKET_NAME") == "" ||

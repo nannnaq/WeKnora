@@ -2,26 +2,32 @@ builtin_models:
   - id: builtin-qwen-chat
     name: ${QWEN_MULTIMODAL_MODEL}
     type: KnowledgeQA
-    source: local
-    description: 默认 Qwen 多模态对话模型（远程 Ollama）
+    source: remote
+    description: 默认 Qwen 多模态对话模型（OpenAI 兼容 vLLM）
     is_default: true
     status: active
     parameters:
-      base_url: ${OLLAMA_BASE_URL}
-      interface_type: ollama
+      base_url: ${QWEN_MULTIMODAL_BASE_URL}
+      interface_type: openai
+      provider: generic
       supports_vision: true
+      extra_config:
+        thinking_control: chat_template_kwargs
 
   - id: builtin-qwen-vlm
     name: ${QWEN_MULTIMODAL_MODEL}
     type: VLLM
-    source: local
-    description: 默认 Qwen 视觉模型（远程 Ollama）
+    source: remote
+    description: 默认 Qwen 视觉模型（OpenAI 兼容 vLLM）
     is_default: true
     status: active
     parameters:
-      base_url: ${OLLAMA_BASE_URL}
-      interface_type: ollama
+      base_url: ${QWEN_MULTIMODAL_BASE_URL}
+      interface_type: openai
+      provider: generic
       supports_vision: true
+      extra_config:
+        enable_thinking: "false"
 
   - id: builtin-qwen-embedding
     name: ${QWEN_EMBEDDING_MODEL}

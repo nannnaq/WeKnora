@@ -40,11 +40,12 @@ func vlmHTTPTimeout() time.Duration {
 
 // RemoteAPIVLM implements VLM via an OpenAI-compatible chat completions API.
 type RemoteAPIVLM struct {
-	modelName   string
-	modelID     string
-	client      *openai.Client
-	baseURL     string
-	temperature float32
+	modelName      string
+	modelID        string
+	client         *openai.Client
+	baseURL        string
+	temperature    float32
+	enableThinking *bool
 }
 
 // NewRemoteAPIVLM creates a remote-API backed VLM instance.
@@ -87,6 +88,7 @@ func NewRemoteAPIVLM(config *Config) (*RemoteAPIVLM, error) {
 	}
 
 	temp := defaultTemp
+	var enableThinking *bool
 	if config.Extra != nil {
 		if v, ok := config.Extra["temperature"]; ok {
 			if vs, ok := v.(string); ok {
@@ -95,14 +97,25 @@ func NewRemoteAPIVLM(config *Config) (*RemoteAPIVLM, error) {
 				}
 			}
 		}
+		if v, ok := config.Extra["enable_thinking"]; ok {
+			switch value := v.(type) {
+			case bool:
+				enableThinking = &value
+			case string:
+				if parsed, err := strconv.ParseBool(value); err == nil {
+					enableThinking = &parsed
+				}
+			}
+		}
 	}
 
 	return &RemoteAPIVLM{
-		modelName:   config.ModelName,
-		modelID:     config.ModelID,
-		client:      openai.NewClientWithConfig(apiCfg),
-		baseURL:     config.BaseURL,
-		temperature: temp,
+		modelName:      config.ModelName,
+		modelID:        config.ModelID,
+		client:         openai.NewClientWithConfig(apiCfg),
+		baseURL:        config.BaseURL,
+		temperature:    temp,
+		enableThinking: enableThinking,
 	}, nil
 }
 
@@ -142,6 +155,11 @@ func (v *RemoteAPIVLM) Predict(ctx context.Context, imgBytesList [][]byte, promp
 		},
 		MaxTokens:   defaultMaxToks,
 		Temperature: v.temperature,
+	}
+	if v.enableThinking != nil {
+		req.ChatTemplateKwargs = map[string]interface{}{
+			"enable_thinking": *v.enableThinking,
+		}
 	}
 
 	totalImageSize := 0

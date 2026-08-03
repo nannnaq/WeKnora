@@ -33,12 +33,26 @@ type Config struct {
 	PromptTemplates *PromptTemplatesConfig `yaml:"prompt_templates" json:"prompt_templates"`
 	IM              *IMConfig              `yaml:"im"               json:"im"`
 	Agent           *AgentConfig           `yaml:"agent"            json:"agent"`
+	RealtimeContext *RealtimeContextConfig `yaml:"realtime_context" json:"realtime_context"`
 	// FrontendBaseURL is the externally-visible origin of the SPA, used
 	// to compose absolute share-link URLs. Empty falls back to a host-
 	// relative URL ("/register?token=…") which the SPA then resolves
 	// against window.location.origin — fine for typical single-origin
 	// deployments. Sourced from FRONTEND_BASE_URL env at startup.
 	FrontendBaseURL string `yaml:"frontend_base_url" json:"frontend_base_url"`
+}
+
+// RealtimeContextConfig configures read-only live evidence that is resolved
+// for a question before the answer model runs. The feature is disabled by
+// default so existing deployments keep their current network behaviour.
+type RealtimeContextConfig struct {
+	Enabled            bool          `yaml:"enabled"              json:"enabled"`
+	GraphBaseURL       string        `yaml:"graph_base_url"       json:"graph_base_url"`
+	RuleBaseURL        string        `yaml:"rule_base_url"        json:"rule_base_url"`
+	CacheTTL           time.Duration `yaml:"cache_ttl"            json:"cache_ttl"`
+	RequestTimeout     time.Duration `yaml:"request_timeout"      json:"request_timeout"`
+	MaxMatchedEntities int           `yaml:"max_matched_entities" json:"max_matched_entities"`
+	MaxContextChars    int           `yaml:"max_context_chars"    json:"max_context_chars"`
 }
 
 // AgentConfig represents the global agent settings.
@@ -580,6 +594,7 @@ func LoadConfig() (*Config, error) {
 	applyOIDCEnvOverrides(&cfg)
 	applyAgentEnvOverrides(&cfg)
 	applyKnowledgeBaseEnvOverrides(&cfg)
+	applyRealtimeContextDefaults(&cfg)
 	applyAuthAndTenantDefaults(&cfg)
 	applyAuditDefaults(&cfg)
 
@@ -606,6 +621,25 @@ func LoadConfig() (*Config, error) {
 	)
 
 	return &cfg, nil
+}
+
+func applyRealtimeContextDefaults(cfg *Config) {
+	if cfg.RealtimeContext == nil {
+		cfg.RealtimeContext = &RealtimeContextConfig{}
+	}
+	rc := cfg.RealtimeContext
+	if rc.CacheTTL <= 0 {
+		rc.CacheTTL = time.Minute
+	}
+	if rc.RequestTimeout <= 0 {
+		rc.RequestTimeout = 5 * time.Second
+	}
+	if rc.MaxMatchedEntities <= 0 {
+		rc.MaxMatchedEntities = 20
+	}
+	if rc.MaxContextChars <= 0 {
+		rc.MaxContextChars = 32_000
+	}
 }
 
 // ValidateConfig performs basic validation of the loaded configuration.

@@ -17,6 +17,7 @@ import (
 	"github.com/Tencent/WeKnora/internal/logger"
 	"github.com/Tencent/WeKnora/internal/modelcontext"
 	"github.com/Tencent/WeKnora/internal/models/chat"
+	"github.com/Tencent/WeKnora/internal/realtimecontext"
 	"github.com/Tencent/WeKnora/internal/tracing/langfuse"
 	"github.com/Tencent/WeKnora/internal/types"
 )
@@ -122,7 +123,11 @@ func (e *AgentEngine) buildSystemPrompt(ctx context.Context) string {
 		e.systemPromptOptions(ctx),
 		e.systemPromptTemplate,
 	)
-	return strings.TrimRight(prompt, " \t\r\n") + e.modelContext.ProtocolPrompt()
+	prompt = strings.TrimRight(prompt, " \t\r\n") + e.modelContext.ProtocolPrompt()
+	if e.config.RealtimeAttempted {
+		prompt = strings.TrimRight(prompt, " \t\r\n") + "\n\n## Live evidence handling\n" + realtimecontext.AnswerInstruction
+	}
+	return prompt
 }
 
 // NewAgentEngineWithSkills creates a new agent engine with skills support

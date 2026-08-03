@@ -11,6 +11,7 @@ import (
 	"github.com/Tencent/WeKnora/internal/common"
 	"github.com/Tencent/WeKnora/internal/logger"
 	"github.com/Tencent/WeKnora/internal/models/chat"
+	"github.com/Tencent/WeKnora/internal/realtimecontext"
 	"github.com/Tencent/WeKnora/internal/searchutil"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
@@ -95,6 +96,9 @@ func prepareMessagesWithHistory(chatManage *types.ChatManage) []chat.Message {
 		"contexts": chatManage.RenderedContexts,
 	})
 	systemPrompt = appendRetrievedImageOutputRequirement(systemPrompt, chatManage.RenderedContexts)
+	if chatManage.RealtimeAttempted {
+		systemPrompt = strings.TrimRight(systemPrompt, " \t\r\n") + "\n\n## Live evidence handling\n" + realtimecontext.AnswerInstruction
+	}
 
 	chatMessages := []chat.Message{
 		{Role: "system", Content: systemPrompt},

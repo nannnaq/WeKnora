@@ -37,6 +37,18 @@ conversation:
   extract_relationships_prompt_id: "default_extract_relationships"  # from prompt_templates/graph_extraction.yaml
   generate_questions_prompt_id: "default_generate_questions"        # from prompt_templates/generate_questions.yaml
 
+# Read-only live evidence for device/entity parameters and effective engagement
+# rules. Disabled by default; enable only after the two internal endpoints and
+# SSRF whitelist are configured for the deployment.
+realtime_context:
+  enabled: false
+  graph_base_url: "http://192.168.18.103:9707"
+  rule_base_url: "http://192.168.18.103:9701"
+  cache_ttl: 60s
+  request_timeout: 5s
+  max_matched_entities: 20
+  max_context_chars: 32000
+
 # Knowledge base configuration
 knowledge_base:
   chunk_size: 512

@@ -100,10 +100,15 @@ func (p *PluginIntoChatMessage) OnEvent(ctx context.Context,
 			userContent += chatManage.Attachments.BuildPrompt()
 		}
 
-		if tpl := chatManage.SummaryConfig.ContextTemplate; tpl != "" {
+		chatManage.RenderedContexts = chatManage.RealtimeContext
+		if chatManage.SkipKnowledgeRetrieval && !chatManage.RealtimeAttempted {
+			// Enabling live context must not alter unrelated pure-chat prompts.
+			// This path mirrors the original direct CHAT_COMPLETION_STREAM input.
+			chatManage.UserContent = userContent
+		} else if tpl := chatManage.SummaryConfig.ContextTemplate; tpl != "" {
 			chatManage.UserContent = types.RenderPromptPlaceholders(tpl, types.PlaceholderValues{
 				"query":    userContent,
-				"contexts": "",
+				"contexts": chatManage.RenderedContexts,
 				"language": chatManage.Language,
 			})
 		} else {
@@ -115,10 +120,17 @@ func (p *PluginIntoChatMessage) OnEvent(ctx context.Context,
 			"user_content_len": len(chatManage.UserContent),
 			"has_template":     chatManage.SummaryConfig.ContextTemplate != "",
 		})
+		if chatManage.RealtimeAttempted {
+			p.persistRenderedContent(ctx, chatManage)
+		}
 		return next()
 	}
 
 	var contextsBuilder strings.Builder
+	if chatManage.RealtimeContext != "" {
+		contextsBuilder.WriteString(chatManage.RealtimeContext)
+		contextsBuilder.WriteString("\n")
+	}
 
 	// Collect unique document metadata (title + description), once per knowledge
 	allResults := chatManage.MergeResult

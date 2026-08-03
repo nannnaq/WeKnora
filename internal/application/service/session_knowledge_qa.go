@@ -160,32 +160,44 @@ func (s *sessionService) KnowledgeQA(
 	hasKB := types.HasKnowledgeRetrievalScope(searchTargets, knowledgeBaseIDs, knowledgeIDs)
 	needsRAG := hasKB || req.WebSearchEnabled
 	hasHistory := chatManage.MaxRounds > 0
+	realtimeEnabled := s.cfg.RealtimeContext != nil && s.cfg.RealtimeContext.Enabled
 
 	var pipeline []types.EventType
 	if !needsRAG {
-		// Pure chat — no retrieval needed.
-		userContent := req.Query
-		if req.ImageDescription != "" && !chatModelSupportsVision {
-			userContent += "\n\n[用户上传图片内容]\n" + req.ImageDescription
+		if realtimeEnabled {
+			// Pure chat still needs prompt composition when live evidence may be
+			// relevant, but must not accidentally run knowledge retrieval.
+			chatManage.SkipKnowledgeRetrieval = true
+			pipeline = types.NewPipelineBuilder().
+				AddIf(hasHistory, types.LOAD_HISTORY).
+				Add(types.REALTIME_CONTEXT).
+				Add(types.INTO_CHAT_MESSAGE).
+				Add(types.CHAT_COMPLETION_STREAM).
+				Build()
+		} else {
+			// Preserve the original pure-chat path when the feature is disabled.
+			userContent := req.Query
+			if req.ImageDescription != "" && !chatModelSupportsVision {
+				userContent += "\n\n[用户上传图片内容]\n" + req.ImageDescription
+			}
+			if req.QuotedContext != "" {
+				userContent += "\n\n" + req.QuotedContext
+			}
+			if len(req.Attachments) > 0 {
+				userContent += req.Attachments.BuildPrompt()
+			}
+			chatManage.UserContent = userContent
+			pipeline = types.NewPipelineBuilder().
+				AddIf(hasHistory, types.LOAD_HISTORY).
+				Add(types.CHAT_COMPLETION_STREAM).
+				Build()
 		}
-		if req.QuotedContext != "" {
-			userContent += "\n\n" + req.QuotedContext
-		}
-		// Inject attachment content for pure-chat path (RAG path handles this in INTO_CHAT_MESSAGE).
-		if len(req.Attachments) > 0 {
-			userContent += req.Attachments.BuildPrompt()
-		}
-		chatManage.UserContent = userContent
-
-		pipeline = types.NewPipelineBuilder().
-			AddIf(hasHistory, types.LOAD_HISTORY).
-			Add(types.CHAT_COMPLETION_STREAM).
-			Build()
 	} else {
 		// RAG — dynamically assemble based on feature flags.
 		pipeline = types.NewPipelineBuilder().
 			AddIf(hasHistory, types.LOAD_HISTORY).
 			Add(types.QUERY_UNDERSTAND).
+			AddIf(realtimeEnabled, types.REALTIME_CONTEXT).
 			Add(types.CHUNK_SEARCH_PARALLEL).
 			Add(types.CHUNK_RERANK).
 			AddIf(req.WebSearchEnabled, types.WEB_FETCH).
@@ -197,8 +209,8 @@ func (s *sessionService) KnowledgeQA(
 			Build()
 	}
 
-	logger.Infof(ctx, "Assembled pipeline (%d stages), hasKB=%v, webSearch=%v, history=%v",
-		len(pipeline), hasKB, req.WebSearchEnabled, hasHistory)
+	logger.Infof(ctx, "Assembled pipeline (%d stages), hasKB=%v, webSearch=%v, history=%v, realtime=%v",
+		len(pipeline), hasKB, req.WebSearchEnabled, hasHistory, realtimeEnabled)
 
 	// Start knowledge QA event processing (set session tenant so pipeline session/message lookups use session owner)
 	ctx = context.WithValue(ctx, types.SessionTenantIDContextKey, req.Session.TenantID)
@@ -674,7 +686,15 @@ func (s *sessionService) KnowledgeQAByEvent(ctx context.Context,
 	var retrievalStart time.Time
 	var understandProgress *chatpipeline.StageProgress
 	var understandStart time.Time
+	skipRemainingRetrieval := false
 	for _, eventType := range eventList {
+		if skipRemainingRetrieval && isPostSearchRetrievalStage(eventType) {
+			common.PipelineInfo(ctx, "Pipeline", "stage_skipped", map[string]interface{}{
+				"event":  string(eventType),
+				"reason": "realtime_context_available_after_empty_search",
+			})
+			continue
+		}
 		stageStart := time.Now()
 		// Wrap each pipeline stage in a Langfuse span so the trace timeline
 		// shows the gaps between LLM/embedding/rerank generations (the work
@@ -760,6 +780,14 @@ func (s *sessionService) KnowledgeQAByEvent(ctx context.Context,
 		}
 
 		if err == chatpipeline.ErrSearchNothing {
+			if chatManage.RealtimeAttempted {
+				common.PipelineWarn(ctx, "Pipeline", "empty_search_continue_with_realtime", map[string]interface{}{
+					"event":           string(eventType),
+					"realtime_usable": chatManage.RealtimeUsable,
+				})
+				skipRemainingRetrieval = true
+				continue
+			}
 			common.PipelineWarn(ctx, "Pipeline", "stage_fallback", map[string]interface{}{
 				"event":       string(eventType),
 				"duration_ms": stageDuration.Milliseconds(),
@@ -792,6 +820,17 @@ func (s *sessionService) KnowledgeQAByEvent(ctx context.Context,
 		"total_duration_ms": time.Since(pipelineStart).Milliseconds(),
 	})
 	return nil
+}
+
+func isPostSearchRetrievalStage(eventType types.EventType) bool {
+	switch eventType {
+	case types.CHUNK_SEARCH, types.CHUNK_SEARCH_PARALLEL, types.ENTITY_SEARCH,
+		types.CHUNK_RERANK, types.WEB_FETCH, types.CHUNK_MERGE,
+		types.FILTER_TOP_K, types.DATA_ANALYSIS:
+		return true
+	default:
+		return false
+	}
 }
 
 // SearchKnowledge performs knowledge base search without LLM summarization

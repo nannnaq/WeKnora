@@ -12,6 +12,8 @@ import (
 	"github.com/Tencent/WeKnora/internal/logger"
 	"github.com/Tencent/WeKnora/internal/models/chat"
 	"github.com/Tencent/WeKnora/internal/models/rerank"
+	"github.com/Tencent/WeKnora/internal/realtimecontext"
+	"github.com/Tencent/WeKnora/internal/tracing/langfuse"
 	"github.com/Tencent/WeKnora/internal/types"
 )
 
@@ -140,6 +142,30 @@ func (s *sessionService) AgentQA(
 		llmContext = []chat.Message{}
 	}
 
+	if s.realtimeResolver != nil {
+		resolveCtx, resolveSpan := langfuse.GetManager().StartSpan(ctx, langfuse.SpanOptions{
+			Name: "realtime_context.resolve",
+			Metadata: map[string]interface{}{
+				"session_id": sessionID,
+				"path":       "agent",
+			},
+		})
+		bundle := s.realtimeResolver.Resolve(resolveCtx, realtimecontext.Request{
+			Query: req.Query, History: realtimeTurnsFromMessages(llmContext), ModelID: effectiveModelID,
+		})
+		agentConfig.RealtimeAttempted = bundle.Attempted
+		agentConfig.RealtimeContext = bundle.Render()
+		resolveSpan.Finish(map[string]interface{}{
+			"attempted":      bundle.Attempted,
+			"usable":         bundle.Usable(),
+			"entity_count":   len(bundle.Entities),
+			"rule_set_count": len(bundle.RuleSets),
+			"source_count":   len(bundle.Sources),
+		}, nil, nil)
+		logger.Infof(ctx, "Resolved agent realtime context: attempted=%v usable=%v entities=%d rule_sets=%d",
+			bundle.Attempted, bundle.Usable(), len(bundle.Entities), len(bundle.RuleSets))
+	}
+
 	// Create agent engine with EventBus
 	logger.Info(ctx, "Creating agent engine")
 	engine, err := s.agentService.CreateAgentEngine(
@@ -206,6 +232,21 @@ func (s *sessionService) AgentQA(
 	}
 	// Return empty - events will be handled by Handler via EventBus subscription
 	return nil
+}
+
+func realtimeTurnsFromMessages(messages []chat.Message) []realtimecontext.Turn {
+	turns := make([]realtimecontext.Turn, 0)
+	for _, message := range messages {
+		switch message.Role {
+		case "user":
+			turns = append(turns, realtimecontext.Turn{User: message.Content})
+		case "assistant":
+			if len(turns) > 0 && turns[len(turns)-1].Assistant == "" {
+				turns[len(turns)-1].Assistant = message.Content
+			}
+		}
+	}
+	return turns
 }
 
 // buildAgentConfig creates a runtime AgentConfig from the QARequest's custom agent configuration,

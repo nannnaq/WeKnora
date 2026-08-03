@@ -272,6 +272,23 @@ func TestRenderUserTurnContent_IncludesScopeBlocks(t *testing.T) {
 	assert.Contains(t, out, "hello")
 }
 
+func TestRenderUserTurnContent_IncludesRealtimeEvidenceOnlyInCurrentRuntimeEnvelope(t *testing.T) {
+	engine := &AgentEngine{
+		config: &types.AgentConfig{
+			RealtimeAttempted: true,
+			RealtimeContext:   "<realtime_evidence>远遥相机在线</realtime_evidence>",
+		},
+		modelContext: modelcontext.NewRegistry(true),
+	}
+	query := "它现在怎么样？"
+	out := engine.RenderUserTurnContent("sess-1", query)
+
+	assert.Contains(t, out, "<live_external_evidence>")
+	assert.Contains(t, out, "远遥相机在线")
+	assert.Equal(t, 1, strings.Count(out, query))
+	assert.True(t, strings.HasSuffix(out, query), "the original query remains the current user text")
+}
+
 func TestBuildMessagesWithLLMContextRegistersBoundScopeBeforeFirstModelCall(t *testing.T) {
 	engine := &AgentEngine{
 		modelContext: modelcontext.NewRegistry(true),

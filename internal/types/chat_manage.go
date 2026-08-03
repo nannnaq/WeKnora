@@ -64,6 +64,9 @@ type PipelineRequest struct {
 	// IntentPromptOverrides holds agent-level intent prompt overrides for the
 	// query-understanding stage. Empty values fall back to tenant/global defaults.
 	IntentPromptOverrides map[string]string `json:"-"`
+	// SkipKnowledgeRetrieval marks the pure-chat path while still allowing
+	// runtime evidence to be composed through INTO_CHAT_MESSAGE.
+	SkipKnowledgeRetrieval bool `json:"-"`
 
 	// Misc request-scoped config
 	TenantID            uint64 `json:"-"`
@@ -128,6 +131,9 @@ type PipelineState struct {
 	ImageDescription     string            `json:"-"`
 	QuotedContext        string            `json:"-"` // Quoted message text, injected at LLM prompt stage
 	SystemPromptOverride string            `json:"-"`
+	RealtimeContext      string            `json:"-"`
+	RealtimeAttempted    bool              `json:"-"`
+	RealtimeUsable       bool              `json:"-"`
 }
 
 // PipelineContext holds runtime context for the current pipeline execution.
@@ -151,6 +157,9 @@ type ChatManage struct {
 // For IntentWebSearch, retrieval is only needed if web search is enabled;
 // for all other intents it delegates to QueryIntent.NeedsKBRetrieval().
 func (c *ChatManage) NeedsRetrieval() bool {
+	if c.SkipKnowledgeRetrieval {
+		return false
+	}
 	if c.Intent == IntentWebSearch {
 		return c.WebSearchEnabled
 	}
@@ -241,6 +250,7 @@ func (c *ChatManage) Clone() *ChatManage {
 			WebFetchTopN:             c.WebFetchTopN,
 			Language:                 c.Language,
 			IntentPromptOverrides:    maps.Clone(c.IntentPromptOverrides),
+			SkipKnowledgeRetrieval:   c.SkipKnowledgeRetrieval,
 		},
 		PipelineState: PipelineState{
 			RewriteQuery:         c.RewriteQuery,
@@ -249,6 +259,9 @@ func (c *ChatManage) Clone() *ChatManage {
 			QuotedContext:        c.QuotedContext,
 			SystemPromptOverride: c.SystemPromptOverride,
 			RenderedContexts:     c.RenderedContexts,
+			RealtimeContext:      c.RealtimeContext,
+			RealtimeAttempted:    c.RealtimeAttempted,
+			RealtimeUsable:       c.RealtimeUsable,
 			Entity:               entity,
 			EntityKBIDs:          entityKBIDs,
 			EntityKnowledge:      entityKnowledge,
@@ -262,6 +275,7 @@ type EventType string
 const (
 	LOAD_HISTORY           EventType = "load_history"
 	QUERY_UNDERSTAND       EventType = "query_understand"
+	REALTIME_CONTEXT       EventType = "realtime_context"
 	CHUNK_SEARCH           EventType = "chunk_search"
 	CHUNK_SEARCH_PARALLEL  EventType = "chunk_search_parallel"
 	ENTITY_SEARCH          EventType = "entity_search"

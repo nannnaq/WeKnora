@@ -377,9 +377,30 @@ func commonStringPrefix(a, b string) string {
 func (e *AgentEngine) RenderUserTurnContent(sessionID, query string) string {
 	e.registerRuntimeReferences()
 	runtimeCtx := buildRuntimeContextBlock(sessionID, e.knowledgeBasesInfo, e.selectedDocs)
+	if e.config != nil {
+		runtimeCtx = appendRealtimeEvidence(runtimeCtx, e.config.RealtimeContext)
+	}
 	runtimeCtx = e.modelContext.CompactKnownText(runtimeCtx)
 	mustUse := buildMustUseBlock(e.pinnedMCPServices, e.pinnedSkills)
 	return composeUserTurnContent(runtimeCtx, mustUse, query)
+}
+
+func appendRealtimeEvidence(runtimeContext, evidence string) string {
+	if strings.TrimSpace(evidence) == "" {
+		return runtimeContext
+	}
+	closing := "</runtime_context>"
+	index := strings.LastIndex(runtimeContext, closing)
+	if index < 0 {
+		return runtimeContext + "\n" + evidence
+	}
+	var out strings.Builder
+	out.WriteString(runtimeContext[:index])
+	out.WriteString("  <live_external_evidence>\n")
+	out.WriteString(indentLines(evidence, "    "))
+	out.WriteString("\n  </live_external_evidence>\n")
+	out.WriteString(runtimeContext[index:])
+	return out.String()
 }
 
 // registerRuntimeReferences makes bound KBs, pinned documents and recent

@@ -1,0 +1,82 @@
+# Offline app build for restricted servers.
+#
+# The builder image and runtime image must already exist in the local Docker
+# image store. Network access through HTTP_PROXY/HTTPS_PROXY is needed only by
+# builder RUN steps. Proxy arguments are deliberately not persisted into the
+# final image, so the application has no dependency on the build-time tunnel.
+
+ARG BUILDER_BASE_IMAGE=golang:1.26-bookworm
+ARG RUNTIME_BASE_IMAGE=wechatopenai/weknora-app:pre-qwen-cutover-20260801
+
+FROM ${BUILDER_BASE_IMAGE} AS builder
+
+WORKDIR /app
+
+# Build-time proxy values are predefined Docker build arguments. Declaring
+# them makes the build contract explicit without writing them into ENV layers.
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG NO_PROXY
+ARG GOPRIVATE_ARG
+ARG GOPROXY_ARG
+ARG GOSUMDB_ARG=off
+ARG APK_MIRROR_ARG
+
+ENV GOPRIVATE=${GOPRIVATE_ARG}
+ENV GOPROXY=${GOPROXY_ARG}
+ENV GOSUMDB=${GOSUMDB_ARG}
+
+RUN if [ -n "$APK_MIRROR_ARG" ]; then \
+        sed -i "s@deb.debian.org@${APK_MIRROR_ARG}@g" /etc/apt/sources.list.d/debian.sources; \
+    fi && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends git build-essential libsqlite3-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
+
+COPY cmd/download cmd/download
+RUN --mount=type=cache,target=/go/pkg/mod go run cmd/download/duckdb/duckdb.go
+
+COPY . .
+
+ARG VERSION_ARG=local
+ARG COMMIT_ID_ARG=local-current-source
+ARG BUILD_TIME_ARG=unknown
+ARG GO_VERSION_ARG=go1.26
+
+ENV VERSION=${VERSION_ARG}
+ENV COMMIT_ID=${COMMIT_ID_ARG}
+ENV BUILD_TIME=${BUILD_TIME_ARG}
+ENV GO_VERSION=${GO_VERSION_ARG}
+
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    make build-prod
+
+# Reuse a complete app runtime that is already cached on the restricted host.
+# It supplies Debian, runtime libraries, Python/uv, gosu and other system tools.
+# Current source artifacts replace the cached image's older application files.
+FROM ${RUNTIME_BASE_IMAGE}
+
+USER root
+WORKDIR /app
+
+COPY --from=builder /app/WeKnora ./WeKnora
+COPY --from=builder /app/config ./config
+COPY --from=builder /app/scripts ./scripts
+COPY --from=builder /app/migrations ./migrations
+COPY --from=builder /app/dataset/samples ./dataset/samples
+COPY --from=builder /app/skills/preloaded ./skills/preloaded
+COPY --from=builder /app/skills/preloaded ./skills/_builtin
+COPY --from=builder /root/.duckdb /home/appuser/.duckdb
+COPY --from=builder /go/pkg/mod/github.com/yanyiwu/ /go/pkg/mod/github.com/yanyiwu/
+
+RUN chmod +x ./WeKnora ./scripts/*.sh && \
+    chown -R appuser:appuser /home/appuser/.duckdb
+
+EXPOSE 8080
+
+ENTRYPOINT ["./scripts/docker-entrypoint.sh"]
+CMD ["./WeKnora"]

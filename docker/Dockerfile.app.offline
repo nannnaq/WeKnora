@@ -55,6 +55,11 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     make build-prod
 
+# Cache mounts are visible only inside their RUN instruction. Persist the
+# gojieba resources into the builder filesystem before copying them to runtime.
+RUN --mount=type=cache,target=/go/pkg/mod \
+    cp -r /go/pkg/mod/github.com/yanyiwu/ /app/yanyiwu/
+
 # Reuse a complete app runtime that is already cached on the restricted host.
 # It supplies Debian, runtime libraries, Python/uv, gosu and other system tools.
 # Current source artifacts replace the cached image's older application files.
@@ -71,7 +76,7 @@ COPY --from=builder /app/dataset/samples ./dataset/samples
 COPY --from=builder /app/skills/preloaded ./skills/preloaded
 COPY --from=builder /app/skills/preloaded ./skills/_builtin
 COPY --from=builder /root/.duckdb /home/appuser/.duckdb
-COPY --from=builder /go/pkg/mod/github.com/yanyiwu/ /go/pkg/mod/github.com/yanyiwu/
+COPY --from=builder /app/yanyiwu/ /go/pkg/mod/github.com/yanyiwu/
 
 RUN chmod +x ./WeKnora ./scripts/*.sh && \
     chown -R appuser:appuser /home/appuser/.duckdb

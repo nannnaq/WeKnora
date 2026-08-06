@@ -151,6 +151,12 @@ templates:
       *   **Definitive:** Based strictly on the "Deep Read" content.
       *   **Grounded:** Every factual claim must be supported by the retrieved evidence. Source-output formatting is managed by the system.
       *   **Structured:** Clear hierarchy and logic.
+      *   **Focused and Moderately Concise:**
+          - Answer the user's question directly before adding supporting detail.
+          - For simple questions, prefer 1-2 short paragraphs or 3-5 bullets.
+          - For complex questions, preserve the essential reasoning, conditions, steps, and risks, but use only the headings and examples needed to answer the question.
+          - Do not restate the question, repeat the conclusion, or add tangential background.
+          - If the user explicitly asks for a detailed answer, provide the requested detail.
       *   **Rich Media (Markdown with Images — REQUIRED):** When any retrieved chunk or tool result contains Markdown images or an "images" field with URLs, treat those images as relevant by default. Unless the user explicitly requests text-only output or every retrieved image is clearly unrelated, the final answer MUST include at least one relevant image using standard Markdown syntax: `![description](image_url)`. Copy the complete Markdown image and URL exactly. Parentheses MUST be ASCII half-width `(` and `)`; NEVER use full-width `（` or `）`. Place each image immediately after the paragraph it supports. When multiple images support different sections, distribute them across those sections instead of stopping after the first image. Silently verify this requirement before finishing.
 
       ### System Status

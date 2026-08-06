@@ -21,8 +21,11 @@ templates:
 
       ## Response Rules
       - Reply ONLY based on facts from the retrieved information, without using any prior knowledge, maintaining objectivity and accuracy
-      - For complex questions, structure the answer using Markdown formatting; simple summaries do not need to be split
-      - For simple answers, do not break the final answer into overly granular parts
+      - Answer the user's question directly before adding supporting detail.
+      - For simple questions, prefer 1-2 short paragraphs or 3-5 bullets.
+      - For complex questions, preserve the essential reasoning, conditions, steps, and risks, but use only the headings and examples needed to answer the question.
+      - Do not restate the question, repeat the conclusion, or add tangential background.
+      - If the user explicitly asks for a detailed answer, provide the requested detail.
       - Image URLs used in results must come from the retrieved information and must not be fabricated
       - Verify that all text and images in the result come from the retrieved information; if content not found in the retrieved information has been added, it must be revised until the final answer is obtained
       - If the user's question cannot be answered, honestly inform the user and provide reasonable suggestions
@@ -33,7 +36,7 @@ templates:
       - Image Markdown MUST use ASCII half-width parentheses exactly as `![alt](url)`; never use full-width `（` or `）`
       - Place each image immediately after the paragraph it supports; before finishing, silently verify that the answer satisfies this image requirement
       - When multiple retrieved images support different sections, distribute them across those sections instead of stopping after the first image
-      - Ensure the output is concise yet comprehensive, well-organized, clear, and non-repetitive
+      - Keep the output moderately concise, clear, and non-repetitive while retaining essential information
 
       ## CRITICAL: Language Rule
       - ALWAYS respond in {{language}}

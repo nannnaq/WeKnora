@@ -1,6 +1,14 @@
 # WeKnora 日常启动、重启与排查速查
 
-适用范围：当前目录的 Docker Compose 全量部署，默认使用 `--profile full`，端口从 `9750` 开始。
+> **重要：本文档只适用于本机开发/联网环境，不适用于 `192.168.18.36`
+> 单机离线交付服务器。** 在 `192.168.18.36` 上不得执行本文中的
+> `pull`、`build`、`prune`、`--profile full` 或全局 Docker 清理命令。该服务器的
+> 日常操作与故障恢复以
+> [18.36七项目Docker故障人工恢复手册](./18.36七项目Docker故障人工恢复手册.md)
+> 为唯一操作依据。
+
+适用范围：当前本机源码目录的 Docker Compose 全量开发部署，默认使用
+`--profile full`，端口从 `9750` 开始。
 
 ## 1. 日常启动
 
@@ -149,3 +157,5 @@ docker compose logs --tail=200 postgres minio neo4j qdrant
 - 数据主要在 Docker volume 中；重装、清理、迁移前先备份。
 - 修改 `SYSTEM_AES_KEY`、`CRYPTO_MASTER_KEY`、`CRYPTO_SALT` 这类加密密钥前要确认影响，改错可能导致旧凭据无法解密。
 - 当前端口规划从 `9750` 起，新增暴露端口继续递增，避免占用服务器已有端口。
+- `192.168.18.36` 的 Docker Root Dir 为 `/mnt/storage/docker_dir`；不要将本机开发环境的
+  卷、网络或清理经验直接套用到该共享服务器。

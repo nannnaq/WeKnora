@@ -6,16 +6,18 @@
 
 | 项目 | 值 |
 |---|---|
-| Web 页面 | `http://服务器IP:9750/` |
-| API Base URL | `http://服务器IP:9751/api/v1` |
-| 健康检查 | `http://服务器IP:9751/health` |
+| Web 页面 | `http://192.168.18.36:9750/` |
+| API Base URL | `http://192.168.18.36:9751/api/v1` |
+| 健康检查 | `http://192.168.18.36:9751/health` |
 | 知识库名称 | `test` |
-| 知识库 ID | `c55df2b7-8fa8-44a4-adbe-4f18f372f7c4` |
+| 知识库 ID | `3d8bfaa9-40ab-4724-b1dc-7d2b1a1fcf47` |
 | 默认 Agent | `builtin-quick-answer` |
 | 调用方式 | 服务端到服务端 HTTP 调用 |
-| 认证方式 | 请求头 `X-API-Key: <WEKNORA_API_KEY>` |
+| 认证方式 | 必须同时传 `X-API-Key` 和 `X-Tenant-ID: 10000` |
 
-`<WEKNORA_API_KEY>` 由 WeKnora 管理员单独提供，不要写进前端页面、小程序、App 或公开仓库。
+`<WEKNORA_API_KEY>` 为长期 API Key，由 WeKnora 管理员单独提供。不要把 API Key
+或 Tenant ID 下发给前端页面、小程序或 App。本机内部凭据值见
+`docs_local/18.36七项目离线目录与资料总索引.md`，禁止将该文档上传到交付服务器。
 
 ## 2. 推荐调用流程
 
@@ -42,8 +44,9 @@
 请求：
 
 ```bash
-curl -sS -X POST 'http://服务器IP:9751/api/v1/sessions' \
+curl -sS -X POST 'http://192.168.18.36:9751/api/v1/sessions' \
   -H 'X-API-Key: <WEKNORA_API_KEY>' \
+  -H 'X-Tenant-ID: 10000' \
   -H 'Content-Type: application/json' \
   -d '{
     "title": "外部平台用户问答",
@@ -81,12 +84,13 @@ session_id = data.id
 请求：
 
 ```bash
-curl -N -X POST 'http://服务器IP:9751/api/v1/knowledge-chat/<SESSION_ID>' \
+curl -N -X POST 'http://192.168.18.36:9751/api/v1/knowledge-chat/<SESSION_ID>' \
   -H 'X-API-Key: <WEKNORA_API_KEY>' \
+  -H 'X-Tenant-ID: 10000' \
   -H 'Content-Type: application/json' \
   -d '{
     "query": "这里替换成用户问题",
-    "knowledge_base_ids": ["c55df2b7-8fa8-44a4-adbe-4f18f372f7c4"],
+    "knowledge_base_ids": ["3d8bfaa9-40ab-4724-b1dc-7d2b1a1fcf47"],
     "agent_id": "builtin-quick-answer",
     "channel": "api",
     "disable_title": true
@@ -148,12 +152,14 @@ data: {"response_type":"answer","content":"","done":true}
 import json
 import requests
 
-BASE_URL = "http://服务器IP:9751/api/v1"
+BASE_URL = "http://192.168.18.36:9751/api/v1"
 API_KEY = "<WEKNORA_API_KEY>"
-KB_ID = "c55df2b7-8fa8-44a4-adbe-4f18f372f7c4"
+TENANT_ID = "10000"
+KB_ID = "3d8bfaa9-40ab-4724-b1dc-7d2b1a1fcf47"
 
 headers = {
     "X-API-Key": API_KEY,
+    "X-Tenant-ID": TENANT_ID,
     "Content-Type": "application/json",
 }
 
@@ -233,13 +239,14 @@ def ask_weknora(session_id, question):
 健康检查：
 
 ```bash
-curl -f 'http://服务器IP:9751/health'
+curl -f 'http://192.168.18.36:9751/health'
 ```
 
 服务端排查命令：
 
 ```bash
-docker compose --profile full ps
+cd /mnt/storage/opt/product/services/weknora
+./scripts/status.sh
 docker compose logs --tail=200 app
 ```
 
@@ -247,16 +254,18 @@ docker compose logs --tail=200 app
 
 | 现象 | 优先检查 |
 |---|---|
-| `401 Unauthorized` | `X-API-Key` 是否缺失、写错或已失效 |
+| `401 Unauthorized` | `X-API-Key` 缺失、写错或已失效；确认没有额外空格或被代理删除 |
+| `409 TENANT_REQUIRED` | API Key 已识别，但缺少 `X-Tenant-ID`；补传 `X-Tenant-ID: 10000` |
+| `403 Forbidden` | Tenant ID 与 API Key 所属工作区不匹配，或 API Key 无目标知识库权限 |
 | `404 Session not found` | `session_id` 是否来自当前 WeKnora，是否保存错 |
-| 返回内容和 test 知识库无关 | `knowledge_base_ids` 是否固定为 `c55df2b7-8fa8-44a4-adbe-4f18f372f7c4` |
+| 返回内容和 test 知识库无关 | `knowledge_base_ids` 是否固定为 `3d8bfaa9-40ab-4724-b1dc-7d2b1a1fcf47` |
 | SSE 一直没有结束 | 调用方超时时间是否太短；代理是否缓冲或截断流式响应 |
 | 没有引用来源 | 问题可能未命中文档；可先在前端 test 知识库中验证同一问题 |
 | 连接不上 API | 检查服务器防火墙、安全组、`WeKnora-app` 容器状态和 `9751` 端口 |
 
 ## 9. 给其他平台的约定
 
-- API Key 只能放在其他平台后端服务，不允许下发到浏览器、小程序或 App。
+- API Key 和 Tenant ID 只能放在其他平台后端服务，不允许下发到浏览器、小程序或 App。
 - 请求超时建议设置为 `180s` 起步，长文档问答或大模型响应慢时可能需要更长。
 - 每次请求建议记录业务请求 ID、WeKnora `session_id`、用户问题、最终回答和错误信息，方便排查。
 - 生产环境如需区分不同终端用户的会话隔离，优先由业务平台保存 `业务用户/业务会话 -> session_id` 映射。

@@ -55,6 +55,9 @@ func (p *PluginRerank) OnEvent(ctx context.Context,
 		return next()
 	}
 	if chatManage.RerankModelID == "" {
+		if chatManage.RealtimeUsable {
+			return rejectKnowledgeResultsForRealtime(ctx, chatManage, "empty_model_id")
+		}
 		pipelineWarn(ctx, "Rerank", "skip", map[string]interface{}{
 			"reason": "empty_model_id",
 		})
@@ -64,6 +67,13 @@ func (p *PluginRerank) OnEvent(ctx context.Context,
 	// Get rerank model from service
 	rerankModel, err := p.modelService.GetRerankModel(ctx, chatManage.RerankModelID)
 	if err != nil {
+		if chatManage.RealtimeUsable {
+			pipelineWarn(ctx, "Rerank", "model_unavailable_with_realtime", map[string]interface{}{
+				"model_id": chatManage.RerankModelID,
+				"error":    err.Error(),
+			})
+			return rejectKnowledgeResultsForRealtime(ctx, chatManage, "model_unavailable")
+		}
 		pipelineError(ctx, "Rerank", "get_model", map[string]interface{}{
 			"model_id": chatManage.RerankModelID,
 			"error":    err.Error(),
@@ -128,6 +138,18 @@ func (p *PluginRerank) OnEvent(ctx context.Context,
 		rerankResp, rerankErr = p.rerank(ctx, chatManage, rerankModel, chatManage.RewriteQuery, passages, candidatesToRerank)
 
 		if rerankErr != nil {
+			if chatManage.RealtimeUsable {
+				pipelineWarn(ctx, "Rerank", "api_error_realtime_fail_closed", map[string]interface{}{
+					"error":         rerankErr.Error(),
+					"candidate_cnt": len(candidatesToRerank),
+				})
+				spanOutput = map[string]interface{}{
+					"stage":           "api_error_realtime_fail_closed",
+					"candidate_count": len(candidatesToRerank),
+					"error":           rerankErr.Error(),
+				}
+				return rejectKnowledgeResultsForRealtime(ctx, chatManage, "rerank_api_error")
+			}
 			// Rerank API failed — fallback to original retrieval results so the
 			// pipeline can still return something useful to the caller.
 			pipelineWarn(ctx, "Rerank", "api_error_fallback", map[string]interface{}{
@@ -145,7 +167,7 @@ func (p *PluginRerank) OnEvent(ctx context.Context,
 		rawRerankResp = append([]rerank.RankResult(nil), rerankResp...)
 
 		// If no results and threshold is high enough, try with lower threshold
-		if len(rerankResp) == 0 && originalThreshold > 0.3 {
+		if len(rerankResp) == 0 && originalThreshold > 0.3 && !chatManage.RealtimeUsable {
 			thresholdDegraded = true
 			degradedThreshold := originalThreshold * 0.7
 			if degradedThreshold < 0.3 {
@@ -247,6 +269,9 @@ func (p *PluginRerank) OnEvent(ctx context.Context,
 			chatManage,
 			thresholdDegraded,
 		)
+		if chatManage.RealtimeUsable {
+			return rejectKnowledgeResultsForRealtime(ctx, chatManage, "no_relevant_results")
+		}
 		return ErrSearchNothing
 	}
 
@@ -392,7 +417,13 @@ func (p *PluginRerank) rerank(ctx context.Context,
 	// when the best score is too low — forcing irrelevant results is worse than
 	// returning nothing and letting the caller handle the empty-result case.
 	fallbackMinScore := rerankFallbackMinScore(chatManage.SearchTargets)
-	if len(rankFilter) == 0 && len(rerankResp) > 0 && rerankResp[0].RelevanceScore >= fallbackMinScore {
+	if len(rankFilter) == 0 && chatManage.RealtimeUsable {
+		pipelineInfo(ctx, "Rerank", "fallback_skip", map[string]interface{}{
+			"reason":    "usable_realtime_requires_relevant_knowledge",
+			"threshold": chatManage.RerankThreshold,
+			"top_score": safeTopScore(rerankResp),
+		})
+	} else if len(rankFilter) == 0 && len(rerankResp) > 0 && rerankResp[0].RelevanceScore >= fallbackMinScore {
 		rankFilter = rerankResp[:1]
 		pipelineInfo(ctx, "Rerank", "fallback_top1", map[string]interface{}{
 			"reason":    "all_below_threshold",
@@ -408,6 +439,27 @@ func (p *PluginRerank) rerank(ctx context.Context,
 	}
 
 	return rankFilter, nil
+}
+
+// rejectKnowledgeResultsForRealtime makes hybrid realtime + knowledge answers
+// fail closed on the knowledge side. Fresh realtime evidence can still answer
+// the turn, but unranked, failed-to-rank, or below-threshold retrieval results
+// must not leak into the model prompt, SSE references, or persisted citations.
+// Knowledge-only questions keep their existing best-effort fallback behavior.
+func rejectKnowledgeResultsForRealtime(
+	ctx context.Context, chatManage *types.ChatManage, reason string,
+) *PluginError {
+	pipelineWarn(ctx, "Rerank", "realtime_knowledge_rejected", map[string]interface{}{
+		"reason":          reason,
+		"search_count":    len(chatManage.SearchResult),
+		"rerank_count":    len(chatManage.RerankResult),
+		"merge_count":     len(chatManage.MergeResult),
+		"realtime_usable": chatManage.RealtimeUsable,
+	})
+	chatManage.SearchResult = nil
+	chatManage.RerankResult = nil
+	chatManage.MergeResult = nil
+	return ErrSearchNothing
 }
 
 func rerankFallbackMinScore(searchTargets types.SearchTargets) float64 {

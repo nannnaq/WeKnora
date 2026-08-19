@@ -98,11 +98,37 @@ func TestPrepareMessagesWithModelContextKeepsRealtimeEvidenceWithKnowledgeResult
 	require.Len(t, messages, 2)
 	require.Contains(t, messages[0].Content, `<chunk id="c1"`)
 	require.Contains(t, messages[0].Content, "active rules")
+	require.Contains(t, messages[0].Content, "Fresh live evidence is an authorized answer source")
 	require.Equal(t, 1, strings.Count(messages[0].Content, "<realtime_evidence>"))
 	require.Less(t,
 		strings.Index(messages[0].Content, `<chunk id="c1"`),
 		strings.Index(messages[0].Content, "<realtime_evidence>"),
 	)
+}
+
+func TestPrepareMessagesWithModelContextKeepsRealtimeEvidenceWhenKnowledgeResultsAreEmpty(t *testing.T) {
+	live := `<realtime_evidence><effective_rule_sets>active rules</effective_rule_sets></realtime_evidence>`
+	manage := &types.ChatManage{
+		PipelineRequest: types.PipelineRequest{
+			Query: "现在的交战规则是什么？",
+			SummaryConfig: types.SummaryConfig{
+				Prompt: `System references: {{contexts}}`,
+			},
+		},
+		PipelineState: types.PipelineState{
+			RealtimeContext:   live,
+			RealtimeAttempted: true,
+			RealtimeUsable:    true,
+			RenderedContexts:  live,
+			UserContent:       "现在的交战规则是什么？",
+		},
+	}
+
+	messages, _ := prepareMessagesWithModelContext(context.Background(), manage)
+	require.Len(t, messages, 2)
+	require.Contains(t, messages[0].Content, "active rules")
+	require.Contains(t, messages[0].Content, "Fresh live evidence is an authorized answer source")
+	require.Equal(t, 1, strings.Count(messages[0].Content+messages[1].Content, "<realtime_evidence>"))
 }
 
 func TestPrepareMessagesWithModelContextFallsBackWhenTemplatesOmitContexts(t *testing.T) {

@@ -102,8 +102,9 @@ func prepareMessagesWithModelContext(
 		index := target.index
 		if chatManage.RenderedContexts != "" && strings.Contains(messages[index].Content, chatManage.RenderedContexts) {
 			if realtimeContext != "" && !realtimeInjected {
-				messages[index].Content = strings.Replace(messages[index].Content, chatManage.RenderedContexts, combinedContexts, 1)
-				messages[index].Content = strings.ReplaceAll(messages[index].Content, chatManage.RenderedContexts, modelContexts)
+				before, after, _ := strings.Cut(messages[index].Content, chatManage.RenderedContexts)
+				messages[index].Content = before + combinedContexts +
+					strings.ReplaceAll(after, chatManage.RenderedContexts, modelContexts)
 				realtimeInjected = true
 				injectionTarget = target.name
 			} else {

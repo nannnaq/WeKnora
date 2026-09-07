@@ -150,7 +150,7 @@ func TestMatchEntitiesMatchesVendorTypesAndPreservesExactNameMatch(t *testing.T)
 		{
 			ID: "camera-vendor-001",
 			Properties: map[string]any{
-				"entityId": "camera-vendor-001", "name": "甲设备", "specificType": "VendorOpticalPayload",
+				"entityId": "camera-vendor-001", "name": "1号甲设备", "specificType": "VendorOpticalPayload",
 			},
 		},
 		{
@@ -160,10 +160,16 @@ func TestMatchEntitiesMatchesVendorTypesAndPreservesExactNameMatch(t *testing.T)
 				"entityId": "camera-vendor-002", "name": "乙相机", "specificType": "VendorOpticalCamera",
 			},
 		},
+		{
+			ID: "1",
+			Properties: map[string]any{
+				"name": "区域组1",
+			},
+		},
 	}}
 
 	radar := matchEntities(snapshot, Request{Query: "雷达设备参数"}, 20)
-	exactName := matchEntities(snapshot, Request{Query: "甲设备相机的设备参数"}, 20)
+	exactName := matchEntities(snapshot, Request{Query: "1号甲设备相机的设备参数"}, 20)
 
 	require.Len(t, radar, 1)
 	require.Equal(t, "radar-vendor-001", radar[0].ID)

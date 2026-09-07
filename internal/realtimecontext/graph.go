@@ -85,7 +85,7 @@ func matchEntities(snapshot graphSnapshot, request Request, limit int) []EntityE
 		specificType := strings.ToUpper(stringProperty(node.Properties, "specificType"))
 		normalizedQuery := normalize(query)
 		score := 0
-		if id != "" && strings.Contains(normalizedQuery, normalize(id)) {
+		if entityIDMatchesQuery(normalizedQuery, id) {
 			score = 120
 		}
 		if name != "" && strings.Contains(normalizedQuery, normalize(name)) && runeLen(name) >= 2 {
@@ -145,6 +145,14 @@ func matchEntities(snapshot graphSnapshot, request Request, limit int) []EntityE
 		result = append(result, makeEntityEvidence(match.node, snapshot.Edges, byID))
 	}
 	return result
+}
+
+// entityIDMatchesQuery keeps short numeric group IDs from being mistaken for
+// a device mentioned with an ordinal, such as "1号相机". Stable asset IDs are
+// longer and remain eligible for exact matching.
+func entityIDMatchesQuery(normalizedQuery, id string) bool {
+	normalizedID := normalize(id)
+	return runeLen(normalizedID) >= 3 && strings.Contains(normalizedQuery, normalizedID)
 }
 
 // nodeMatchesRequestedTypes accepts both canonical ontology types and the

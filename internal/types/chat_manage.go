@@ -32,6 +32,11 @@ type PipelineRequest struct {
 	// CitationEnabled controls only final knowledge/web source citations. Nil
 	// defaults to true for requests and agents created before this option existed.
 	CitationEnabled *bool `json:"citation_enabled,omitempty"`
+	// APIHybridPureAnswer is a server-derived mode for tenant API-key callers.
+	// It keeps live evidence and KB context available to the answer model while
+	// suppressing source artifacts from the streamed response. It is never
+	// accepted from the client request body.
+	APIHybridPureAnswer bool `json:"-"`
 
 	// Rewrite parameters
 	EnableRewrite        bool   `json:"enable_rewrite"`
@@ -229,6 +234,7 @@ func (c *ChatManage) Clone() *ChatManage {
 			FallbackResponse:         c.FallbackResponse,
 			FallbackPrompt:           c.FallbackPrompt,
 			CitationEnabled:          c.CitationEnabled,
+			APIHybridPureAnswer:      c.APIHybridPureAnswer,
 			EnableRewrite:            c.EnableRewrite,
 			EnableQueryExpansion:     c.EnableQueryExpansion,
 			RewritePromptSystem:      c.RewritePromptSystem,

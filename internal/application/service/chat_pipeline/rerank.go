@@ -55,6 +55,10 @@ func (p *PluginRerank) OnEvent(ctx context.Context,
 		return next()
 	}
 	if chatManage.RerankModelID == "" {
+		if chatManage.APIHybridPureAnswer {
+			keepRawResultsForAPIHybrid(ctx, chatManage, "empty_model_id")
+			return next()
+		}
 		if chatManage.RealtimeUsable {
 			return rejectKnowledgeResultsForRealtime(ctx, chatManage, "empty_model_id")
 		}
@@ -67,6 +71,14 @@ func (p *PluginRerank) OnEvent(ctx context.Context,
 	// Get rerank model from service
 	rerankModel, err := p.modelService.GetRerankModel(ctx, chatManage.RerankModelID)
 	if err != nil {
+		if chatManage.APIHybridPureAnswer {
+			pipelineWarn(ctx, "Rerank", "model_unavailable_api_hybrid_fallback", map[string]interface{}{
+				"model_id": chatManage.RerankModelID,
+				"error":    err.Error(),
+			})
+			keepRawResultsForAPIHybrid(ctx, chatManage, "model_unavailable")
+			return next()
+		}
 		if chatManage.RealtimeUsable {
 			pipelineWarn(ctx, "Rerank", "model_unavailable_with_realtime", map[string]interface{}{
 				"model_id": chatManage.RerankModelID,
@@ -138,6 +150,20 @@ func (p *PluginRerank) OnEvent(ctx context.Context,
 		rerankResp, rerankErr = p.rerank(ctx, chatManage, rerankModel, chatManage.RewriteQuery, passages, candidatesToRerank)
 
 		if rerankErr != nil {
+			if chatManage.APIHybridPureAnswer {
+				pipelineWarn(ctx, "Rerank", "api_error_api_hybrid_fallback", map[string]interface{}{
+					"error":         rerankErr.Error(),
+					"candidate_cnt": len(candidatesToRerank),
+				})
+				chatManage.SearchResult = candidatesToRerank
+				keepRawResultsForAPIHybrid(ctx, chatManage, "rerank_api_error")
+				spanOutput = map[string]interface{}{
+					"stage":           "api_hybrid_raw_fallback",
+					"candidate_count": len(chatManage.SearchResult),
+					"error":           rerankErr.Error(),
+				}
+				return next()
+			}
 			if chatManage.RealtimeUsable {
 				pipelineWarn(ctx, "Rerank", "api_error_realtime_fail_closed", map[string]interface{}{
 					"error":         rerankErr.Error(),
@@ -184,6 +210,17 @@ func (p *PluginRerank) OnEvent(ctx context.Context,
 			// Restore original threshold
 			chatManage.RerankThreshold = originalThreshold
 			if rerankErr != nil {
+				if chatManage.APIHybridPureAnswer {
+					chatManage.SearchResult = candidatesToRerank
+					keepRawResultsForAPIHybrid(ctx, chatManage, "rerank_degraded_api_error")
+					spanOutput = map[string]interface{}{
+						"stage":              "api_hybrid_raw_fallback",
+						"candidate_count":    len(chatManage.SearchResult),
+						"threshold_degraded": thresholdDegraded,
+						"error":              rerankErr.Error(),
+					}
+					return next()
+				}
 				pipelineWarn(ctx, "Rerank", "api_error_fallback", map[string]interface{}{
 					"error":         rerankErr.Error(),
 					"candidate_cnt": len(candidatesToRerank),
@@ -460,6 +497,26 @@ func rejectKnowledgeResultsForRealtime(
 	chatManage.RerankResult = nil
 	chatManage.MergeResult = nil
 	return ErrSearchNothing
+}
+
+const apiHybridRawResultLimit = 10
+
+// keepRawResultsForAPIHybrid makes the API-key-only hybrid path independent of
+// reranker availability. Browser requests keep the stricter realtime policy.
+func keepRawResultsForAPIHybrid(ctx context.Context, chatManage *types.ChatManage, reason string) {
+	if chatManage == nil {
+		return
+	}
+	sortSearchResultsDeterministically(chatManage.SearchResult)
+	if len(chatManage.SearchResult) > apiHybridRawResultLimit {
+		chatManage.SearchResult = chatManage.SearchResult[:apiHybridRawResultLimit]
+	}
+	chatManage.RerankResult = nil
+	pipelineInfo(ctx, "Rerank", "api_hybrid_raw_context", map[string]interface{}{
+		"reason":          reason,
+		"candidate_count": len(chatManage.SearchResult),
+		"limit":           apiHybridRawResultLimit,
+	})
 }
 
 func rerankFallbackMinScore(searchTargets types.SearchTargets) float64 {

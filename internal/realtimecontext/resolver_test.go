@@ -97,6 +97,73 @@ func TestResolverAddsMatchingEntityAndRemovesSensitiveFields(t *testing.T) {
 	}
 }
 
+func TestResolverMatchesVendorCameraTypeUsingGraphLabel(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/sync/status", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"success":true,"source":"platform","entity_count":1}`))
+	})
+	mux.HandleFunc("/api/graph", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{
+			"nodes":[{
+				"id":"camera-cs-001",
+				"labels":["Entity","Sensor","Camera"],
+				"properties":{
+					"entityId":"camera-cs-001",
+					"name":"1号相机",
+					"specificType":"ThirdPartyYuan8Camera",
+					"isOnline":1,
+					"healthStatus":"HEALTH_STATUS_HEALTHY",
+					"resolutionWidth":1920,
+					"resolutionHeight":1080,
+					"fps":25,
+					"visibility":6000
+				}
+			}],"edges":[]
+		}`))
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	resolver := NewResolver(config.RealtimeContextConfig{
+		Enabled: true, GraphBaseURL: server.URL, CacheTTL: time.Minute, RequestTimeout: time.Second,
+	}, nil, WithHTTPClient(server.Client()))
+
+	bundle := resolver.Resolve(context.Background(), Request{Query: "1号相机的设备参数是什么？"})
+
+	require.True(t, bundle.Attempted)
+	require.True(t, bundle.Usable())
+	require.Len(t, bundle.Entities, 1)
+	require.Equal(t, "camera-cs-001", bundle.Entities[0].ID)
+	require.Equal(t, "1号相机", bundle.Entities[0].Name)
+	require.Equal(t, float64(1920), bundle.Entities[0].Properties["resolutionWidth"])
+}
+
+func TestMatchEntitiesMatchesVendorTypesAndPreservesExactNameMatch(t *testing.T) {
+	snapshot := graphSnapshot{Nodes: []graphNode{
+		{
+			ID:     "radar-vendor-001",
+			Labels: []string{"Entity", "Radar"},
+			Properties: map[string]any{
+				"entityId": "radar-vendor-001", "name": "近程雷达", "specificType": "VendorShortRangeRadar",
+			},
+		},
+		{
+			ID: "camera-vendor-001",
+			Properties: map[string]any{
+				"entityId": "camera-vendor-001", "name": "甲设备", "specificType": "VendorOpticalPayload",
+			},
+		},
+	}}
+
+	radar := matchEntities(snapshot, Request{Query: "雷达设备参数"}, 20)
+	exactName := matchEntities(snapshot, Request{Query: "甲设备相机的设备参数"}, 20)
+
+	require.Len(t, radar, 1)
+	require.Equal(t, "radar-vendor-001", radar[0].ID)
+	require.Len(t, exactName, 1)
+	require.Equal(t, "camera-vendor-001", exactName[0].ID)
+}
+
 func TestResolverReturnsEveryEnabledRuleSetForGenericCurrentRulesQuestion(t *testing.T) {
 	var disabledRuleReads int
 	mux := http.NewServeMux()

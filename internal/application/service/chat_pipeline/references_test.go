@@ -131,6 +131,36 @@ func TestPrepareMessagesWithModelContextKeepsRealtimeEvidenceWhenKnowledgeResult
 	require.Equal(t, 1, strings.Count(messages[0].Content+messages[1].Content, "<realtime_evidence>"))
 }
 
+func TestPrepareMessagesWithModelContextAPIHybridSuppressesSourceArtifacts(t *testing.T) {
+	live := `<realtime_evidence><effective_rule_sets>active rules</effective_rule_sets></realtime_evidence>`
+	image := `![manual diagram](minio://weknora/private.png)`
+	manage := &types.ChatManage{
+		PipelineRequest: types.PipelineRequest{
+			Query:               "当前规则与操作手册如何配合？",
+			APIHybridPureAnswer: true,
+			SummaryConfig:       types.SummaryConfig{Prompt: "system"},
+		},
+		PipelineState: types.PipelineState{
+			RealtimeContext:   live,
+			RealtimeAttempted: true,
+			RealtimeUsable:    true,
+			RenderedContexts:  live,
+			UserContent:       "当前规则与操作手册如何配合？",
+			MergeResult: []*types.SearchResult{{
+				ID: "chunk-1", KnowledgeTitle: "操作手册.pdf", Content: "操作流程\n" + image,
+			}},
+		},
+	}
+
+	messages, _ := prepareMessagesWithModelContext(context.Background(), manage)
+	combined := messages[0].Content + messages[1].Content
+	require.Contains(t, combined, "active rules")
+	require.Contains(t, combined, "操作流程")
+	require.NotContains(t, combined, "操作手册.pdf")
+	require.NotContains(t, combined, "minio://weknora/private.png")
+	require.NotContains(t, combined, "Retrieved Image Output Requirement")
+}
+
 func TestPrepareMessagesWithModelContextFallsBackWhenTemplatesOmitContexts(t *testing.T) {
 	live := `<realtime_evidence><effective_rule_sets>active rules</effective_rule_sets></realtime_evidence>`
 	manage := &types.ChatManage{

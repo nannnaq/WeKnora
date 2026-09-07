@@ -65,7 +65,7 @@ func TestRerankDoesNotForceLowRelevanceKnowledgeIntoUsableRealtimeAnswer(t *test
 		[]*types.SearchResult{candidate},
 	)
 
-	require.NoError(t, err)
+	require.Nil(t, err)
 	require.Empty(t, got, "low-relevance KB material must not be forced into a usable realtime answer")
 }
 
@@ -146,4 +146,29 @@ func TestRerankWithoutModelDropsKnowledgeWhenRealtimeIsUsable(t *testing.T) {
 
 	require.Equal(t, ErrSearchNothing, err)
 	require.Empty(t, manage.SearchResult)
+}
+
+func TestRerankWithoutModelKeepsRawKnowledgeForAPIHybridAnswer(t *testing.T) {
+	results := make([]*types.SearchResult, 0, 12)
+	for i := range 12 {
+		results = append(results, &types.SearchResult{ID: string(rune('a' + i)), Score: float64(12 - i)})
+	}
+	manage := &types.ChatManage{
+		PipelineRequest: types.PipelineRequest{APIHybridPureAnswer: true},
+		PipelineState: types.PipelineState{
+			RealtimeUsable: true,
+			SearchResult:   results,
+		},
+	}
+
+	err := (&PluginRerank{}).OnEvent(
+		context.Background(),
+		types.CHUNK_RERANK,
+		manage,
+		func() *PluginError { return nil },
+	)
+
+	require.Nil(t, err)
+	require.Len(t, manage.SearchResult, apiHybridRawResultLimit)
+	require.Equal(t, "a", manage.SearchResult[0].ID)
 }

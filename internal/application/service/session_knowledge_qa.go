@@ -152,6 +152,9 @@ func (s *sessionService) KnowledgeQA(
 	// Apply custom agent overrides (system prompt, temperature, retrieval params,
 	// rewrite, fallback, FAQ strategy, history turns)
 	s.applyAgentOverridesToChatManage(ctx, req.CustomAgent, chatManage)
+	if _, apiKeyCaller := types.TenantAPIKeyScopeFromContext(ctx); apiKeyCaller && isAPIHybridQuickAnswer(req.CustomAgent) {
+		enableAPIHybridPureAnswer(chatManage)
+	}
 
 	// Determine pipeline based on the effective knowledge retrieval scope and
 	// web search setting. Tag-only mentions leave the raw KB/knowledge ID slices
@@ -1226,7 +1229,7 @@ func (s *sessionService) consumeFallbackStream(
 // Must run before CHAT_COMPLETION_STREAM so the event arrives while the
 // connection is still open (complete closes the stream).
 func emitKnowledgeReferencesEvent(ctx context.Context, chatManage *types.ChatManage) {
-	if chatManage == nil || chatManage.EventBus == nil || len(chatManage.MergeResult) == 0 {
+	if chatManage == nil || chatManage.EventBus == nil || len(chatManage.MergeResult) == 0 || chatManage.APIHybridPureAnswer {
 		return
 	}
 	logger.Infof(ctx, "Emitting references event with %d results (pre-answer)", len(chatManage.MergeResult))

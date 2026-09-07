@@ -80,6 +80,52 @@ func TestEmitKnowledgeReferencesEventIgnoresCitationOutputSetting(t *testing.T) 
 	require.Len(t, emitted, 2)
 }
 
+func TestEmitKnowledgeReferencesEventSkipsAPIHybridPureAnswer(t *testing.T) {
+	bus := event.NewEventBus()
+	var emitted []event.Event
+	bus.On(event.EventAgentReferences, func(_ context.Context, evt event.Event) error {
+		emitted = append(emitted, evt)
+		return nil
+	})
+	cm := &types.ChatManage{
+		PipelineRequest: types.PipelineRequest{APIHybridPureAnswer: true},
+		PipelineState:   types.PipelineState{MergeResult: []*types.SearchResult{{ID: "chunk-1"}}},
+		PipelineContext: types.PipelineContext{EventBus: bus.AsEventBusInterface()},
+	}
+
+	emitKnowledgeReferencesEvent(context.Background(), cm)
+	require.Empty(t, emitted)
+}
+
+func TestEnableAPIHybridPureAnswerIsRequestLocal(t *testing.T) {
+	enabled := true
+	cm := &types.ChatManage{PipelineRequest: types.PipelineRequest{
+		CitationEnabled: &enabled,
+		SummaryConfig:   types.SummaryConfig{Prompt: "custom", ContextTemplate: "template"},
+	}}
+
+	enableAPIHybridPureAnswer(cm)
+
+	require.True(t, cm.APIHybridPureAnswer)
+	require.False(t, cm.CitationsEnabled())
+	require.Equal(t, apiHybridPureAnswerPrompt, cm.SummaryConfig.Prompt)
+	require.Equal(t, "{{query}}", cm.SummaryConfig.ContextTemplate)
+}
+
+func TestAPIHybridPureAnswerPromptSeparatesLiveAndStaticEvidence(t *testing.T) {
+	require.Contains(t, apiHybridPureAnswerPrompt, "whether a live entity directly matches")
+	require.Contains(t, apiHybridPureAnswerPrompt, "Current live status")
+	require.Contains(t, apiHybridPureAnswerPrompt, "Static specifications and operating notes")
+	require.Contains(t, apiHybridPureAnswerPrompt, "Never present static specifications as a current reading")
+}
+
+func TestIsAPIHybridQuickAnswer(t *testing.T) {
+	require.True(t, isAPIHybridQuickAnswer(nil))
+	require.True(t, isAPIHybridQuickAnswer(&types.CustomAgent{ID: types.BuiltinQuickAnswerID}))
+	require.True(t, isAPIHybridQuickAnswer(&types.CustomAgent{Config: types.CustomAgentConfig{AgentMode: "quick-answer"}}))
+	require.False(t, isAPIHybridQuickAnswer(&types.CustomAgent{ID: "custom-agent", Config: types.CustomAgentConfig{AgentMode: "smart-reasoning"}}))
+}
+
 func (s *stubModelService) CreateModel(context.Context, *types.Model) error {
 	return nil
 }

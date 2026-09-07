@@ -594,6 +594,7 @@ func LoadConfig() (*Config, error) {
 	applyOIDCEnvOverrides(&cfg)
 	applyAgentEnvOverrides(&cfg)
 	applyKnowledgeBaseEnvOverrides(&cfg)
+	applyRealtimeContextEnvOverrides(&cfg)
 	applyRealtimeContextDefaults(&cfg)
 	applyAuthAndTenantDefaults(&cfg)
 	applyAuditDefaults(&cfg)
@@ -639,6 +640,57 @@ func applyRealtimeContextDefaults(cfg *Config) {
 	}
 	if rc.MaxContextChars <= 0 {
 		rc.MaxContextChars = 32_000
+	}
+}
+
+// applyRealtimeContextEnvOverrides makes the documented REALTIME_CONTEXT_*
+// variables authoritative even when config.yaml contains literal defaults.
+// Viper AutomaticEnv alone does not reliably feed nested values into Unmarshal.
+func applyRealtimeContextEnvOverrides(cfg *Config) {
+	if cfg.RealtimeContext == nil {
+		cfg.RealtimeContext = &RealtimeContextConfig{}
+	}
+	rc := cfg.RealtimeContext
+	if raw, ok := os.LookupEnv("REALTIME_CONTEXT_ENABLED"); ok && strings.TrimSpace(raw) != "" {
+		if parsed, err := strconv.ParseBool(raw); err == nil {
+			rc.Enabled = parsed
+		} else {
+			fmt.Printf("Warning: ignoring invalid REALTIME_CONTEXT_ENABLED=%q\n", raw)
+		}
+	}
+	if raw, ok := os.LookupEnv("REALTIME_CONTEXT_GRAPH_BASE_URL"); ok && strings.TrimSpace(raw) != "" {
+		rc.GraphBaseURL = strings.TrimSpace(raw)
+	}
+	if raw, ok := os.LookupEnv("REALTIME_CONTEXT_RULE_BASE_URL"); ok && strings.TrimSpace(raw) != "" {
+		rc.RuleBaseURL = strings.TrimSpace(raw)
+	}
+	if raw, ok := os.LookupEnv("REALTIME_CONTEXT_CACHE_TTL"); ok && strings.TrimSpace(raw) != "" {
+		if parsed, err := time.ParseDuration(raw); err == nil {
+			rc.CacheTTL = parsed
+		} else {
+			fmt.Printf("Warning: ignoring invalid REALTIME_CONTEXT_CACHE_TTL=%q\n", raw)
+		}
+	}
+	if raw, ok := os.LookupEnv("REALTIME_CONTEXT_REQUEST_TIMEOUT"); ok && strings.TrimSpace(raw) != "" {
+		if parsed, err := time.ParseDuration(raw); err == nil {
+			rc.RequestTimeout = parsed
+		} else {
+			fmt.Printf("Warning: ignoring invalid REALTIME_CONTEXT_REQUEST_TIMEOUT=%q\n", raw)
+		}
+	}
+	if raw, ok := os.LookupEnv("REALTIME_CONTEXT_MAX_MATCHED_ENTITIES"); ok && strings.TrimSpace(raw) != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+			rc.MaxMatchedEntities = parsed
+		} else {
+			fmt.Printf("Warning: ignoring invalid REALTIME_CONTEXT_MAX_MATCHED_ENTITIES=%q\n", raw)
+		}
+	}
+	if raw, ok := os.LookupEnv("REALTIME_CONTEXT_MAX_CONTEXT_CHARS"); ok && strings.TrimSpace(raw) != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+			rc.MaxContextChars = parsed
+		} else {
+			fmt.Printf("Warning: ignoring invalid REALTIME_CONTEXT_MAX_CONTEXT_CHARS=%q\n", raw)
+		}
 	}
 }
 

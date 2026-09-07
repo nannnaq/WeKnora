@@ -91,8 +91,8 @@ func matchEntities(snapshot graphSnapshot, request Request, limit int) []EntityE
 		if name != "" && strings.Contains(normalizedQuery, normalize(name)) && runeLen(name) >= 2 {
 			score = max(score, 110)
 		}
-		typeMatches := len(requestedTypes) == 0 || requestedTypes[specificType]
-		if !typeMatches {
+		exactMatch := score >= 110
+		if !exactMatch && !nodeMatchesRequestedTypes(node, requestedTypes, specificType) {
 			continue
 		}
 		shared := longestCommonCJK(query, name)
@@ -133,6 +133,35 @@ func matchEntities(snapshot graphSnapshot, request Request, limit int) []EntityE
 		result = append(result, makeEntityEvidence(match.node, snapshot.Edges, byID))
 	}
 	return result
+}
+
+// nodeMatchesRequestedTypes accepts both canonical ontology types and the
+// semantic labels/vendor-specific type names emitted by the entity graph. For
+// example, a node labelled Camera with specificType ThirdPartyYuan8Camera is
+// still a CAMERA for an "相机设备参数" question. Exact ID/name matches bypass
+// this helper in matchEntities so vendor ontology changes never hide the
+// explicitly requested entity.
+func nodeMatchesRequestedTypes(node graphNode, requestedTypes map[string]bool, specificType string) bool {
+	if len(requestedTypes) == 0 {
+		return true
+	}
+	specific := normalize(specificType)
+	for requested := range requestedTypes {
+		canonical := normalize(requested)
+		if canonical == "" {
+			continue
+		}
+		if specific == canonical || strings.Contains(specific, canonical) {
+			return true
+		}
+		for _, label := range node.Labels {
+			semanticLabel := normalize(label)
+			if semanticLabel == canonical || strings.Contains(semanticLabel, canonical) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func makeEntityEvidence(node graphNode, edges []graphEdge, byID map[string]graphNode) EntityEvidence {

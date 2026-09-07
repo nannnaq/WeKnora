@@ -118,6 +118,18 @@ func matchEntities(snapshot graphSnapshot, request Request, limit int) []EntityE
 		}
 		return stringProperty(matches[i].node.Properties, "name") < stringProperty(matches[j].node.Properties, "name")
 	})
+	// A query naming a concrete entity must not be diluted by same-type
+	// candidates. Keep every exact ID/name hit (so multi-entity queries still
+	// work), but drop broad type matches such as other Camera-labelled nodes.
+	if len(matches) > 0 && matches[0].score >= 110 {
+		exact := matches[:0]
+		for _, match := range matches {
+			if match.score >= 110 {
+				exact = append(exact, match)
+			}
+		}
+		matches = exact
+	}
 	if limit <= 0 {
 		limit = 20
 	}

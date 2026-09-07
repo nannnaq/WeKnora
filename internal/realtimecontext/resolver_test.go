@@ -153,6 +153,13 @@ func TestMatchEntitiesMatchesVendorTypesAndPreservesExactNameMatch(t *testing.T)
 				"entityId": "camera-vendor-001", "name": "甲设备", "specificType": "VendorOpticalPayload",
 			},
 		},
+		{
+			ID:     "camera-vendor-002",
+			Labels: []string{"Entity", "Camera"},
+			Properties: map[string]any{
+				"entityId": "camera-vendor-002", "name": "乙相机", "specificType": "VendorOpticalCamera",
+			},
+		},
 	}}
 
 	radar := matchEntities(snapshot, Request{Query: "雷达设备参数"}, 20)

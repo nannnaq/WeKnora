@@ -1,0 +1,11 @@
+use_default_settings: true
+server:
+  secret_key: d089586a1020e2d45bba2e888bc6af91ef72a75bf2cb9ac92385ebf79b784134
+  limiter: false
+search:
+  formats: [html, json]
+outgoing:
+  request_timeout: 15
+  proxies:
+    all://:
+      - http://192.168.18.152:7897

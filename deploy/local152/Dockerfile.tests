@@ -1,0 +1,8 @@
+FROM golang:1.26-bookworm
+WORKDIR /app
+COPY go.mod go.sum ./
+COPY . .
+ENV GOPROXY=https://proxy.golang.org,direct
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+    gofmt -w internal/models/chat/remote_api.go internal/models/chat/thinking_test.go && \
+    go test ./internal/models/chat

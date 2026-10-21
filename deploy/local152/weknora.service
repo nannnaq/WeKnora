@@ -1,0 +1,20 @@
+[Unit]
+Description=WeKnora on 192.168.18.152
+Wants=network-online.target
+Requires=docker.service
+After=network-online.target docker.service
+RequiresMountsFor=/mnt/storage/cjy/WeKnora /mnt/storage/docker_dir
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/mnt/storage/cjy/WeKnora
+ExecStart=/usr/bin/docker compose --env-file .env -f deploy/local152/compose.yaml up -d --wait --wait-timeout 240
+ExecStop=/usr/bin/docker compose --env-file .env -f deploy/local152/compose.yaml stop
+TimeoutStartSec=300
+TimeoutStopSec=120
+Restart=on-failure
+RestartSec=20
+
+[Install]
+WantedBy=multi-user.target

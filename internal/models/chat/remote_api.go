@@ -36,6 +36,8 @@ type RemoteAPIChat struct {
 	adapter providerAdapter
 	// thinkingOverride 来自 extra_config.thinking_control，非 nil 时覆盖 adapter.Thinking()。
 	thinkingOverride ThinkingStrategy
+	// An explicit model-level false also applies to background and agent calls.
+	disableThinking bool
 }
 
 // NewRemoteAPIChat 创建远程 API 聊天实例
@@ -110,6 +112,7 @@ func NewRemoteAPIChat(chatConfig *ChatConfig) (*RemoteAPIChat, error) {
 		customHeaders:    chatConfig.CustomHeaders,
 		adapter:          resolveProvider(providerName, modelName),
 		thinkingOverride: parseThinkingOverride(chatConfig.ExtraConfig),
+		disableThinking:  strings.EqualFold(strings.TrimSpace(chatConfig.ExtraConfig["enable_thinking"]), "false"),
 	}, nil
 }
 
@@ -134,6 +137,15 @@ func (c *RemoteAPIChat) shapedRequest(messages []Message, opts *ChatOptions, isS
 func (c *RemoteAPIChat) buildOutbound(
 	messages []Message, opts *ChatOptions, isStream bool,
 ) (body any, endpoint string, useRawHTTP bool, err error) {
+	if c.disableThinking {
+		var localOpts ChatOptions
+		if opts != nil {
+			localOpts = *opts
+		}
+		thinking := false
+		localOpts.Thinking = &thinking
+		opts = &localOpts
+	}
 	req := c.shapedRequest(messages, opts, isStream)
 
 	thinking := c.thinkingOverride

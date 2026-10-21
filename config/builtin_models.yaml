@@ -1,57 +1,51 @@
 builtin_models:
   - id: builtin-qwen-chat
-    name: ${QWEN_MULTIMODAL_MODEL}
+    name: qwen3-8-27b
     type: KnowledgeQA
     source: remote
-    description: 默认 Qwen 多模态对话模型（OpenAI 兼容 vLLM）
     is_default: true
     status: active
     parameters:
-      base_url: ${QWEN_MULTIMODAL_BASE_URL}
+      base_url: http://192.168.18.152:7860/v1
       interface_type: openai
       provider: generic
       supports_vision: true
       extra_config:
         thinking_control: chat_template_kwargs
-
+        enable_thinking: "false"
   - id: builtin-qwen-vlm
-    name: ${QWEN_MULTIMODAL_MODEL}
+    name: qwen3-8-27b
     type: VLLM
     source: remote
-    description: 默认 Qwen 视觉模型（OpenAI 兼容 vLLM）
     is_default: true
     status: active
     parameters:
-      base_url: ${QWEN_MULTIMODAL_BASE_URL}
+      base_url: http://192.168.18.152:7860/v1
       interface_type: openai
       provider: generic
       supports_vision: true
       extra_config:
         enable_thinking: "false"
-
   - id: builtin-qwen-embedding
-    name: ${QWEN_EMBEDDING_MODEL}
+    name: /workspace/model_embedding_w8a8
     type: Embedding
     source: remote
-    description: 默认 Qwen 文本向量模型
     is_default: true
     status: active
     parameters:
-      base_url: ${QWEN_BASE_URL}
-      api_key: ${QWEN_API_KEY}
-      provider: aliyun
+      base_url: http://192.168.18.152:8001/v1
+      interface_type: openai
+      provider: generic
       embedding_parameters:
-        dimension: 1024
+        dimension: 2560
         truncate_prompt_tokens: 0
-
   - id: builtin-qwen-rerank
-    name: ${QWEN_RERANK_MODEL}
+    name: /workspace/model_reranker_w8a8
     type: Rerank
     source: remote
-    description: Qwen Rerank 模型
     is_default: true
     status: active
     parameters:
-      base_url: ${QWEN_RERANK_BASE_URL}
-      api_key: ${QWEN_API_KEY}
-      provider: aliyun
+      base_url: http://192.168.18.152:8002/v1
+      interface_type: openai
+      provider: generic

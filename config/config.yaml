@@ -11,7 +11,7 @@ conversation:
   keyword_threshold: 0.3
   embedding_top_k: 30
   vector_threshold: 0.2
-  rerank_threshold: 0.3
+  rerank_threshold: 0.1
   rerank_top_k: 30
   fallback_strategy: "model"
   fallback_response: "Sorry, I am unable to answer this question."
@@ -42,8 +42,8 @@ conversation:
 # SSRF whitelist are configured for the deployment.
 realtime_context:
   enabled: false
-  graph_base_url: "http://192.168.18.103:9707"
-  rule_base_url: "http://192.168.18.103:9701"
+  graph_base_url: "http://192.168.18.152:9707"
+  rule_base_url: "http://192.168.18.152:9701"
   cache_ttl: 60s
   request_timeout: 5s
   max_matched_entities: 20

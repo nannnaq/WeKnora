@@ -11,6 +11,26 @@ import (
 
 func ptrBool(b bool) *bool { return &b }
 
+func TestModelDisablesThinkingForAllCalls(t *testing.T) {
+	c := newOutboundChat(t, "generic", "qwen3-8-27b", map[string]string{
+		"thinking_control": "chat_template_kwargs",
+		"enable_thinking":  "false",
+	})
+	for _, stream := range []bool{false, true} {
+		for _, opts := range []*ChatOptions{nil, {}, {Thinking: ptrBool(true), MaxTokens: 300}} {
+			body, _, raw, err := c.buildOutbound([]Message{{Role: "user", Content: "hi"}}, opts, stream)
+			require.NoError(t, err)
+			require.True(t, raw)
+			req := body.(*openai.ChatCompletionRequest)
+			assert.Equal(t, false, req.ChatTemplateKwargs["enable_thinking"])
+			if opts != nil && opts.Thinking != nil {
+				assert.True(t, *opts.Thinking, "caller options must not be mutated")
+				assert.Equal(t, 300, req.MaxTokens)
+			}
+		}
+	}
+}
+
 // TestThinkingStrategy_NilThinking verifies the strategies that defer to the
 // model default emit nothing when ChatOptions.Thinking is unset.
 func TestThinkingStrategy_NilThinking(t *testing.T) {

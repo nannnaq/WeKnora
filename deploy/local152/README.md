@@ -1,7 +1,9 @@
 # 192.168.18.152 部署记录
 
-部署日期：2026-10-12。源码直接位于 `/mnt/storage/cjy/WeKnora`，来源为
-`https://github.com/nannnaq/WeKnora.git`，基准提交 `2c014cde`。
+初次部署日期：2026-10-12；本次升级日期：2026-10-21。源码位于
+`/mnt/storage/cjy/WeKnora`，来源为 `https://github.com/nannnaq/WeKnora.git`。
+当前后端源码提交 `1b22397b`，基于合并提交 `05837493`，已合并官方 main
+`e0c28bef`（0.8.3），并保留原有 knowledge-chat 调用协议和实时图谱、规则上下文。
 项目级 Git 代理为本机已有的 `http://127.0.0.1:7897`。
 
 访问入口：**http://192.168.18.152:9750/**。使用 103 上原有的账号和密码登录。
@@ -24,7 +26,7 @@
 | MCP | 9770 | `/mcp`，需要鉴权 |
 | PostgreSQL | 容器内部 5432 | 独立 PostgreSQL 17，未占用宿主机现有 5432 |
 | Redis | 容器内部 6379 | 独立 Redis 7，未发布到宿主机 |
-| Docreader | 容器内部 50051 | 与 103 相同的 v0.7.1 ARM64 镜像 |
+| Docreader | 容器内部 50051 | 按合并后的源码重建，复用 ARM64 解析运行环境 |
 
 所有对外发布端口绑定 `192.168.18.152`，保留 103 的端口号。
 PostgreSQL、Redis、Docreader 使用本项目 Docker 网络中的服务名通信，
@@ -100,3 +102,41 @@ docker compose --env-file .env -f deploy/local152/compose.yaml logs -f app
 
 独立 PostgreSQL 使用普通 PostgreSQL 17 存储项目元数据；103 ParadeDB 的附加
 GIS/搜索扩展系统表不作为项目数据复制。实际检索与 103 一样由 Qdrant 提供。
+
+## 2026-10-21 镜像重建
+
+前端、MCP、Docreader 镜像标签为 `arm64-152-05837493`，
+后端标签为 `arm64-152-1b22397b`（补充实时字段缺失单位时不得猜测的提示），
+生产配置为本目录 `compose.yaml`，服务端口和持久化目录沿用原配置。
+构建日志在 `.weknora-deploy/logs/rebuild-*-20261021.log`。
+
+后端使用 `docker/Dockerfile.app.offline` 和本机缓存的 ARM64 运行环境。
+它保留 Python Docreader 解析方式，不链接可选的 Rust anydoc 引擎。
+前端使用本目录 `Dockerfile.ui`，在 Node 24 中执行 npm ci / Vite 构建，
+并安装与新版前端配套的三份 nginx 配置。
+MCP 的依赖约束没有变化，复用原镜像的可编辑安装；Docreader 使用新锁文件同步依赖。
+
+后端 COPY 整个源码时，不要把运行数据目录作为构建上下文。
+请用干净的同版本源码检出，或用 git archive 生成临时构建目录，
+并用本仓库的 `docker/Dockerfile.app.offline` 指定 Dockerfile。
+前端构建上下文是 `frontend/`；MCP 和 Docreader 只复制各自源码子目录。
+
+升级前的事务一致数据库导出位于
+`.weknora-deploy/rebuild-20261021/database-before-upgrade.dump`（仅数据库，未备份源码）。
+数据库升级由应用启动时执行；不要单独恢复旧应用镜像后直接连接已升级的数据库。
+
+本次生产验收（2026-10-21 12:02，UTC+8）：
+
+- 数据库从 78 升级到 133，dirty=false；文档记录 32 条、分块 2177 条。
+- 原 API Key、租户和知识库调用 knowledge-chat，HTTP 200，answer/complete SSE 正常完成。
+- “远遥雷达的设备参数”同时返回实时状态、量程 12（单位未提供），以及 FAR2827 文档规格。
+- 日志确认实时上下文成功注入，知识上下文包含 24 段；量程和健康状态与同期图谱快照一致。
+- 首次内容约 5.3 秒、完整回答约 17.4 秒；前端/API 代理、后端健康和 MCP 31 个工具初始化检查通过。
+- 验收记录：`.weknora-deploy/logs/knowledge-chat-production-20261021.json`。
+- 服务检查：`.weknora-deploy/logs/deployment-health-20261021.json`。
+
+单位提示修订的服务层测试已通过；最终程序在上述完整运行镜像上增量替换。
+后续也可从 `1b22397b` 源码使用 `docker/Dockerfile.app.offline` 完整重建。
+
+现有 Qdrant 为 1.16.2，Go 客户端为 1.18.1，启动时会输出版本兼容提示。
+本轮 2560 维知识检索、重排和实时上下文联合回答均已实测通过。

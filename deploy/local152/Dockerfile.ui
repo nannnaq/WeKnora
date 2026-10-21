@@ -1,6 +1,21 @@
-FROM nginx:alpine
-COPY dist /usr/share/nginx/html
+ARG NODE_BASE_IMAGE=node:24-bookworm-slim@sha256:ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af091d5281095a71e
+ARG NGINX_BASE_IMAGE=nginx:alpine
+FROM ${NODE_BASE_IMAGE} AS builder
+WORKDIR /frontend
+ENV VITE_IS_DOCKER=true NODE_OPTIONS=--max-old-space-size=4096
+ARG NPM_REGISTRY=https://registry.npmjs.org
+COPY package.json package-lock.json ./
+RUN --mount=type=cache,target=/root/.npm npm ci --registry=${NPM_REGISTRY}
+COPY . .
+ARG VITE_FRONTEND_COMMIT=unknown
+ENV VITE_FRONTEND_COMMIT=${VITE_FRONTEND_COMMIT}
+RUN npm run build
+
+FROM ${NGINX_BASE_IMAGE}
+COPY --from=builder /frontend/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/templates/default.conf.template
+COPY nginx-api-proxy.conf /etc/nginx/api-proxy.conf
+COPY nginx-http.conf /etc/nginx/conf.d/00-weknora-http.conf
 COPY docker-entrypoint.sh /docker-entrypoint.sh
 RUN chmod +x /docker-entrypoint.sh
 ENV MAX_FILE_SIZE_MB=50

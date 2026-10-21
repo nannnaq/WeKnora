@@ -10,7 +10,7 @@ x-defaults: &defaults
 services:
   frontend:
     <<: *defaults
-    image: weknora-ui:arm64-152
+    image: weknora-ui:arm64-152-05837493
     container_name: WeKnora-frontend
     ports: ['192.168.18.152:9750:80']
     environment:
@@ -22,7 +22,7 @@ services:
       app: {condition: service_healthy}
   app:
     <<: *defaults
-    image: weknora-app:arm64-152
+    image: weknora-app:arm64-152-1b22397b
     container_name: WeKnora-app
     env_file: ../../.env
     ports: ['192.168.18.152:9751:8080']
@@ -46,7 +46,7 @@ services:
       start_period: 90s
   docreader:
     <<: *defaults
-    image: wechatopenai/weknora-docreader:v0.7.1
+    image: weknora-docreader:arm64-152-05837493
     container_name: WeKnora-docreader
     volumes:
       - ../../.weknora-deploy/runtime/docreader-tmp:/tmp/docreader
@@ -138,7 +138,7 @@ services:
       SEARXNG_BASE_URL: http://192.168.18.152:9752/
   mcp:
     <<: *defaults
-    image: weknora-mcp:arm64-152
+    image: weknora-mcp:arm64-152-05837493
     container_name: WeKnora-mcp
     ports: ['192.168.18.152:9770:8000']
     env_file: ../../.env

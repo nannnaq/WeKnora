@@ -1,0 +1,8 @@
+# Retain the cached ARM64 runtime, including OCR and Playwright dependencies.
+FROM wechatopenai/weknora-docreader:v0.7.1
+WORKDIR /app
+RUN rm -rf /app/docreader
+COPY docreader/ ./docreader/
+RUN UV_PROJECT_ENVIRONMENT=/app/.venv uv sync --frozen --no-dev --project docreader && /app/.venv/bin/python -m compileall -q docreader
+ENTRYPOINT ["/app/.venv/bin/python", "-m", "docreader.container_entrypoint"]
+CMD ["/app/.venv/bin/python", "-m", "docreader.main"]

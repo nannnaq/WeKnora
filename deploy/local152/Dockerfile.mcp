@@ -1,7 +1,8 @@
-FROM python:3.12-slim
+ARG MCP_BASE_IMAGE=weknora-mcp:arm64-152
+FROM ${MCP_BASE_IMAGE}
 WORKDIR /app
-COPY mcp-server/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Reuse the installed dependencies; upstream has not changed their constraints.
 COPY mcp-server/ .
-RUN pip install --no-cache-dir -e .
+# The cached image already installs this directory as an editable package.
+RUN python -m compileall -q . && pip check
 CMD ["weknora-mcp-server", "--transport", "http", "--host", "0.0.0.0", "--port", "8000"]

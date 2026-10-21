@@ -1,14 +1,34 @@
 <template>
   <div v-if="visible" ref="rootElement" class="rag-pipeline-progress">
-    <div v-if="showPrePipelineWait" class="tree-children">
+    <!-- Announcements need a region that outlives each wait row, otherwise screen
+         readers miss a live region that appears together with its own text. -->
+    <div class="sr-only" role="status" aria-live="polite">{{ liveStatusText }}</div>
+
+    <!-- A turn that only recalled memory has no pipeline to draw. It borrows
+         this component for the memory row alone, so anything derived from the
+         agent event stream must stay out of the way — the agent timeline is
+         rendering those same steps itself. -->
+    <ChatMemoryStep
+      v-if="memoryOnly"
+      variant="root"
+      :memories="memoryItems"
+      :expanded="memoryExpanded"
+      :forgetting-id="forgettingId"
+      @toggle="toggleMemory"
+      @forget="forgetMemory"
+    />
+
+    <div v-else-if="showPrePipelineWait" class="tree-children">
       <div class="tree-child tree-child-last streaming-loading-node">
         <div class="tree-branch" />
         <div class="tree-child-content">
-          <div class="action-card action-pending">
-            <div class="action-header no-results">
-              <div class="action-title">
-                <t-icon class="action-title-icon" name="lightbulb" />
-                <span class="action-name">{{ t('chat.thinkingAlt') }}</span>
+          <div class="tool-event">
+            <div class="action-card action-pending">
+              <div class="action-header no-results">
+                <div class="action-title">
+                  <ChatTimelineIcon class="action-title-icon" name="lightbulb" :active="true" />
+                  <span class="action-name">{{ t('chat.preparingAnswer') }}</span>
+                </div>
               </div>
             </div>
           </div>
@@ -17,9 +37,20 @@
     </div>
 
     <div v-else-if="!showCollapsedRoot" class="tree-children">
+      <ChatMemoryStep
+        v-if="hasMemory"
+        :memories="memoryItems"
+        :expanded="memoryExpanded"
+        :is-last="memoryIsLast"
+        :forgetting-id="forgettingId"
+        @toggle="toggleMemory"
+        @forget="forgetMemory"
+      />
+
       <div v-for="(step, index) in steps" :key="step.id" class="tree-child" :class="{
         'tree-child-last':
           !showDoneRow
+          && !showWaitStep
           && !showThinkingStep
           && index === steps.length - 1,
       }">
@@ -40,12 +71,31 @@
                 :class="{ 'no-results': !step.canOpenReferences }"
               >
                 <div class="action-title">
-                  <t-icon class="action-title-icon" :name="step.iconName" />
+                  <ChatTimelineIcon class="action-title-icon" :name="step.iconName" :active="step.pending && !hasAnswer && !session?.is_completed" />
                   <span class="action-name" :class="{ 'is-running': step.pending }">{{ step.title }}</span>
                 </div>
               </div>
               <div v-if="step.summaryHtml" class="search-results-summary-fixed">
                 <div class="results-summary-text" v-html="step.summaryHtml" />
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div
+        v-if="showWaitStep"
+        class="tree-child tree-child-last streaming-loading-node rag-model-wait-step"
+      >
+        <div class="tree-branch" />
+        <div class="tree-child-content">
+          <div class="tool-event">
+            <div class="action-card" :class="{ 'action-pending': !waitStepStalled }">
+              <div class="action-header no-results">
+                <div class="action-title">
+                  <ChatTimelineIcon class="action-title-icon" name="lightbulb" :active="!waitStepStalled" />
+                  <span class="action-name">{{ waitStepText }}</span>
+                </div>
               </div>
             </div>
           </div>
@@ -60,7 +110,7 @@
             <div class="action-card" :class="{ 'action-pending': thinkingPending }">
               <div class="action-header" :class="{ 'no-results': !thinkingContent }" @click="toggleThinking">
                 <div class="action-title">
-                  <t-icon class="action-title-icon" name="lightbulb" />
+                  <ChatTimelineIcon class="action-title-icon" name="lightbulb" :active="thinkingActive" />
                   <span class="action-name">{{ t('agent.think') }}</span>
                 </div>
               </div>
@@ -79,7 +129,7 @@
             <div class="action-card">
               <div class="action-header no-results">
                 <div class="action-title">
-                  <t-icon class="action-title-icon" name="check-circle" />
+                  <ChatTimelineIcon class="action-title-icon" name="check-circle" />
                   <span class="action-name">{{ t('common.finish') }}</span>
                 </div>
               </div>
@@ -107,7 +157,7 @@
               >
                 {{ referenceSummaryText }}
               </span>
-              <t-icon
+              <ChatTimelineIcon width="14" height="14"
                 class="tree-root-expand__icon"
                 :name="showExpandedTimeline ? 'chevron-down' : 'chevron-right'"
               />
@@ -117,6 +167,16 @@
       </div>
 
       <div v-if="showExpandedTimeline" class="tree-children tree-children-expanded">
+        <ChatMemoryStep
+          v-if="hasMemory"
+          :memories="memoryItems"
+          :expanded="memoryExpanded"
+          :is-last="memoryIsLast"
+          :forgetting-id="forgettingId"
+          @toggle="toggleMemory"
+          @forget="forgetMemory"
+        />
+
         <div v-for="(step, index) in steps" :key="step.id" class="tree-child"
           :class="{ 'tree-child-last': index === steps.length - 1 && !showDoneRow && !showThinkingStep }">
           <div class="tree-branch" />
@@ -136,7 +196,7 @@
                   :class="{ 'no-results': !step.canOpenReferences }"
                 >
                   <div class="action-title">
-                    <t-icon class="action-title-icon" :name="step.iconName" />
+                    <ChatTimelineIcon class="action-title-icon" :name="step.iconName" :active="step.pending && !hasAnswer && !session?.is_completed" />
                     <span class="action-name" :class="{ 'is-running': step.pending }">{{ step.title }}</span>
                   </div>
                 </div>
@@ -155,7 +215,7 @@
               <div class="action-card" :class="{ 'action-pending': thinkingPending }">
                 <div class="action-header" :class="{ 'no-results': !thinkingContent }" @click="toggleThinking">
                   <div class="action-title">
-                    <t-icon class="action-title-icon" name="lightbulb" />
+                    <ChatTimelineIcon class="action-title-icon" name="lightbulb" :active="thinkingActive" />
                     <span class="action-name">{{ t('agent.think') }}</span>
                   </div>
                 </div>
@@ -174,7 +234,7 @@
               <div class="action-card">
                 <div class="action-header no-results">
                   <div class="action-title">
-                    <t-icon class="action-title-icon" name="check-circle" />
+                    <ChatTimelineIcon class="action-title-icon" name="check-circle" />
                     <span class="action-name">{{ t('common.finish') }}</span>
                   </div>
                 </div>
@@ -188,8 +248,11 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import ChatTimelineIcon from '@/components/ChatTimelineIcon.vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import ChatMemoryStep from './ChatMemoryStep.vue'
+import { useChatMemoryRow } from '@/composables/useChatMemoryRow'
 import { getAgentToolIconName } from '@/utils/agent-tool-icons'
 import {
   getKnowledgeSearchSummaryHtml,
@@ -197,9 +260,14 @@ import {
   getRetrievalSearchSource,
 } from '@/utils/agent-tool-display'
 import { getAttachmentParsingSummaryHtml } from '@/utils/attachmentParsingDisplay'
-import { RAG_TIMELINE_TOOL_NAMES } from '@/utils/rag-pipeline-history'
+import { RAG_RETRIEVAL_TOOL_NAMES, RAG_TIMELINE_TOOL_NAMES } from '@/utils/rag-pipeline-history'
 import { useChatReferencesDrawer } from '@/composables/useChatReferencesDrawer'
 import { buildReferenceSections } from '@/utils/referenceSources'
+import {
+  createRagWaitController,
+  getRagPipelineWaitKind,
+  type RagWaitView,
+} from '@/utils/rag-pipeline-state'
 
 const props = defineProps<{
   session?: {
@@ -207,9 +275,13 @@ const props = defineProps<{
     agentEventStream?: Array<Record<string, unknown>>
     content?: string
     knowledge_references?: Array<{ chunk_type?: string; knowledge_id?: string; knowledge_title?: string }>
+    used_memories?: Array<{ id: string; kind: string; content: string }>
     is_completed?: boolean
   }
   embeddedMode?: boolean
+  // Set by hosts that already render their own timeline (the agent stream) and
+  // only need the memory row from here.
+  memoryOnly?: boolean
 }>()
 
 const { t } = useI18n()
@@ -217,6 +289,22 @@ const referencesDrawer = useChatReferencesDrawer()
 const userExpanded = ref(false)
 const thinkingExpanded = ref(true)
 const rootElement = ref<HTMLElement | null>(null)
+const waitView = ref<RagWaitView>({ kind: 'none', stalled: false })
+const waitController = createRagWaitController((view) => {
+  waitView.value = view
+})
+
+// Long-term memory is shown as a timeline row rather than as a card of its
+// own: it is one more thing the turn did before answering, and giving it a
+// separate visual language would make it read as unrelated to the pipeline.
+const {
+  memoryItems,
+  hasMemory,
+  expanded: memoryExpanded,
+  forgettingId,
+  toggle: toggleMemory,
+  forget: forgetMemory,
+} = useChatMemoryRow(() => props.session?.used_memories)
 
 const thinkingContent = computed(() => {
   const stream = props.session?.agentEventStream
@@ -274,7 +362,7 @@ const steps = computed(() => {
           ? (event.tool_data as Record<string, unknown>)
           : null
 
-      const isSearchTool = toolName === 'knowledge_search' || toolName === 'search_knowledge'
+      const isSearchTool = RAG_RETRIEVAL_TOOL_NAMES.has(toolName)
       const isAttachmentTool = toolName === 'attachment_parsing' || toolName === 'image_analysis'
       const searchSource = isSearchTool
         ? getRetrievalSearchSource(event.arguments, toolData)
@@ -289,6 +377,7 @@ const steps = computed(() => {
 
       return {
         id: String(event.tool_call_id || `${toolName}-${event.timestamp || 0}`),
+        toolName,
         pending,
         iconName: getAgentToolIconName(toolName, searchSource),
         title: getRagPipelineStepTitle(t, {
@@ -308,6 +397,30 @@ const allStepsDone = computed(
   () => steps.value.length > 0 && steps.value.every((step) => !step.pending),
 )
 
+const hasCompletedRetrievalStep = computed(() => steps.value.some(
+  (step) => RAG_RETRIEVAL_TOOL_NAMES.has(step.toolName) && !step.pending,
+))
+
+const waitKind = computed(() => getRagPipelineWaitKind({
+  isCompleted: Boolean(props.session?.is_completed),
+  hasAnswer: hasAnswer.value,
+  hasThinkingEvent: hasThinkingEvent.value,
+  stepCount: steps.value.length,
+  allStepsDone: allStepsDone.value,
+  hasCompletedRetrievalStep: hasCompletedRetrievalStep.value,
+}))
+
+const showWaitStep = computed(() => waitView.value.kind !== 'none')
+
+const waitStepStalled = computed(() => waitView.value.stalled)
+
+const waitStepText = computed(() => {
+  if (waitView.value.stalled) return t('chat.modelStillResponding')
+  return waitView.value.kind === 'model'
+    ? t('chat.connectingModelAndGeneratingAnswer')
+    : t('chat.preparingAnswer')
+})
+
 const showCollapsedRoot = computed(
   () =>
     (hasAnswer.value || Boolean(props.session?.is_completed)) &&
@@ -322,6 +435,10 @@ const showExpandedTimeline = computed(() => {
 const showDoneRow = computed(() => {
   const turnDone = hasAnswer.value || Boolean(props.session?.is_completed)
   if (!turnDone) return false
+  // A timeline rendered only because memory was used has nothing to report as
+  // finished; adding a "done" row there would put a step into plain chat that
+  // never had one.
+  if (steps.value.length === 0 && !hasThinking.value) return false
   if (steps.value.length > 0 && !allStepsDone.value) return false
   return true
 })
@@ -330,12 +447,18 @@ const showPrePipelineWait = computed(() => {
   if (hasAnswer.value || props.session?.is_completed || steps.value.length > 0 || hasThinking.value) {
     return false
   }
-  return true
+  // Memory is recalled before the first token, so once it is on screen the
+  // turn is visibly under way and the placeholder would be redundant.
+  return !hasMemory.value
 })
 
 // Only show the thinking row once the backend actually streams thinking events.
 // Do not pre-empt during the model phase — that flashes "思考" even when thinking is disabled.
 const showThinkingStep = computed(() => hasThinkingEvent.value)
+
+const thinkingActive = computed(
+  () => showThinkingStep.value && !hasAnswer.value && !props.session?.is_completed,
+)
 
 const thinkingPending = computed(
   () =>
@@ -353,9 +476,26 @@ const isThinkingStreaming = computed(
     !props.session?.is_completed,
 )
 
-const visible = computed(
-  () => steps.value.length > 0 || showPrePipelineWait.value || showThinkingStep.value,
+// Memory alone is enough to render: a plain-chat answer that used memory still
+// needs somewhere to say so.
+const visible = computed(() => {
+  if (props.memoryOnly) return hasMemory.value
+  return (
+    steps.value.length > 0 || showPrePipelineWait.value || showThinkingStep.value || hasMemory.value
+  )
+})
+
+// The memory row leads the timeline, so it is only the last node when nothing
+// else rendered.
+const memoryIsLast = computed(
+  () => steps.value.length === 0 && !showWaitStep.value && !showThinkingStep.value && !showDoneRow.value,
 )
+
+const liveStatusText = computed(() => {
+  if (showPrePipelineWait.value) return t('chat.preparingAnswer')
+  if (showWaitStep.value) return waitStepText.value
+  return ''
+})
 
 const collapsedStatusText = computed(() => {
   if (steps.value.length === 0) {
@@ -422,6 +562,8 @@ watch(thinkingPending, (pending) => {
   }
 })
 
+watch(waitKind, (kind) => waitController.update(kind), { immediate: true })
+
 watch(hasAnswer, (answered) => {
   if (answered && hasThinking.value) {
     thinkingExpanded.value = false
@@ -437,18 +579,32 @@ watch(thinkingExpanded, (expanded) => {
   if (!expanded || !isThinkingStreaming.value) return
   scrollThinkingDetailToBottom()
 })
+
+onBeforeUnmount(() => {
+  waitController.dispose()
+})
 </script>
 
 <style scoped lang="less">
+@import (reference) '@/components/css/chat-timeline-theme.less';
 @import '@/components/css/chat-timeline-loading.less';
 
 .rag-pipeline-progress {
-  --agent-step-text-size: 14px;
-  --agent-step-summary-size: 13px;
-  --agent-step-line-color: color-mix(in srgb, var(--td-text-color-primary) 16%, transparent);
-  --agent-step-icon-color: var(--td-text-color-placeholder);
+  .chat-timeline-theme();
 
   margin: 0;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .tree-container {
@@ -474,10 +630,10 @@ watch(thinkingExpanded, (expanded) => {
     margin: 0;
     padding: 0;
     border: 0;
-    border-radius: 4px;
+    border-radius: var(--app-radius-xs);
     background: transparent;
     color: var(--td-text-color-secondary);
-    font-size: 14px;
+    font-size: var(--app-text-base);
     line-height: 22px;
     cursor: pointer;
     flex: 0 1 auto;
@@ -515,7 +671,7 @@ watch(thinkingExpanded, (expanded) => {
 
   .tree-root-expand__icon {
     flex-shrink: 0;
-    font-size: 14px;
+    font-size: var(--app-text-base);
     color: currentColor;
   }
 
@@ -536,14 +692,14 @@ watch(thinkingExpanded, (expanded) => {
   position: relative;
   padding-left: 42px;
   padding-bottom: 0;
-  margin-bottom: 18px;
+  margin-bottom: 14px;
 
   &::before {
     content: '';
     position: absolute;
     left: 9px;
     top: 22px;
-    bottom: -18px;
+    bottom: -14px;
     width: 0;
     border-left: 1px solid var(--agent-step-line-color);
   }
@@ -572,6 +728,7 @@ watch(thinkingExpanded, (expanded) => {
       cursor: pointer;
 
       &:hover {
+        .action-title-icon,
         .action-name,
         .results-summary-text {
           color: var(--td-text-color-primary);
@@ -621,7 +778,7 @@ watch(thinkingExpanded, (expanded) => {
     font-size: var(--agent-step-text-size);
     line-height: 1.55;
     font-weight: 400;
-    color: var(--td-text-color-secondary);
+    color: var(--agent-step-color);
     word-break: break-word;
     max-width: min(820px, 100%);
   }
@@ -633,11 +790,11 @@ watch(thinkingExpanded, (expanded) => {
   .results-summary-text {
     font-size: var(--agent-step-summary-size);
     font-weight: 400;
-    color: var(--td-text-color-secondary);
+    color: var(--agent-step-color);
     line-height: 1.5;
 
     :deep(strong) {
-      color: var(--td-text-color-secondary);
+      color: var(--agent-step-color);
       font-weight: 500;
     }
   }
@@ -649,7 +806,7 @@ watch(thinkingExpanded, (expanded) => {
     padding: 0;
     font-size: var(--agent-step-summary-size);
     font-weight: 400;
-    color: var(--td-text-color-placeholder);
+    color: var(--agent-step-color);
     line-height: 1.55;
     white-space: pre-wrap;
     word-break: break-word;
@@ -658,7 +815,7 @@ watch(thinkingExpanded, (expanded) => {
   }
 
   .action-pending .action-name {
-    color: var(--td-text-color-secondary);
+    color: var(--agent-step-color);
   }
 }
 

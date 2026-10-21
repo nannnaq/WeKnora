@@ -2,6 +2,7 @@ package types
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"strings"
 	"time"
@@ -11,13 +12,23 @@ import (
 	"gorm.io/gorm"
 )
 
+// ErrDataSourceSettingsConflict means the saved connector changed during a selection update.
+var ErrDataSourceSettingsConflict = errors.New("data source configuration changed; reload before retrying")
+
 // Data source types and constants
 const (
 	// Connector types
 	ConnectorTypeFeishu = "feishu"
 	// ConnectorTypeLark is Feishu's international edition (open.larksuite.com).
 	// It shares the Feishu connector; only the API host and tenant differ.
-	ConnectorTypeLark        = "lark"
+	ConnectorTypeLark = "lark"
+	// ConnectorTypeFeishuDrive is the Feishu Drive (云盘) mode: syncs documents
+	// under a user-supplied Drive folder_token, as opposed to a Wiki space.
+	// Shares the feishu connector package; only resource enumeration + fetch differ.
+	ConnectorTypeFeishuDrive = "feishu_drive"
+	// ConnectorTypeLarkDrive is the Lark (international) Drive mode, the
+	// international counterpart of ConnectorTypeFeishuDrive.
+	ConnectorTypeLarkDrive   = "lark_drive"
 	ConnectorTypeNotion      = "notion"
 	ConnectorTypeConfluence  = "confluence"
 	ConnectorTypeYuque       = "yuque"
@@ -29,6 +40,9 @@ const (
 	ConnectorTypeSlack       = "slack"
 	ConnectorTypeIMAP        = "imap"
 	ConnectorTypeRSS         = "rss"
+	ConnectorTypeGitLab      = "gitlab"
+	ConnectorTypeIMA         = "ima"
+	ConnectorTypeSeafile     = "seafile"
 
 	// Sync modes
 	SyncModeIncremental = "incremental"
@@ -135,40 +149,40 @@ func (d *DataSource) BeforeCreate(tx *gorm.DB) error {
 // SyncLog records the execution of a sync task
 type SyncLog struct {
 	// Unique identifier
-	ID string `json:"id" gorm:"type:varchar(36);primaryKey"`
+	ID string `json:"id" gorm:"type:varchar(36);primaryKey" extensions:"x-agent=sync_log_id"`
 
 	// Reference to the data source
-	DataSourceID string `json:"data_source_id" gorm:"index"`
+	DataSourceID string `json:"data_source_id" gorm:"index" extensions:"x-agent"`
 
 	// Workspace ID
 	TenantID uint64 `json:"tenant_id" gorm:"index"`
 
 	// Sync status: running, success, partial, failed, canceled
-	Status string `json:"status" gorm:"type:varchar(32);index"`
+	Status string `json:"status" gorm:"type:varchar(32);index" extensions:"x-agent"`
 
 	// Sync start time
-	StartedAt time.Time `json:"started_at"`
+	StartedAt time.Time `json:"started_at" extensions:"x-agent"`
 
 	// Sync completion time
-	FinishedAt *time.Time `json:"finished_at"`
+	FinishedAt *time.Time `json:"finished_at" extensions:"x-agent"`
 
 	// Total items fetched from source
-	ItemsTotal int `json:"items_total"`
+	ItemsTotal int `json:"items_total" extensions:"x-agent"`
 
 	// New items created in knowledge base
-	ItemsCreated int `json:"items_created"`
+	ItemsCreated int `json:"items_created" extensions:"x-agent"`
 
 	// Existing items updated
-	ItemsUpdated int `json:"items_updated"`
+	ItemsUpdated int `json:"items_updated" extensions:"x-agent"`
 
 	// Items deleted from knowledge base
-	ItemsDeleted int `json:"items_deleted"`
+	ItemsDeleted int `json:"items_deleted" extensions:"x-agent"`
 
 	// Items skipped (no changes detected)
-	ItemsSkipped int `json:"items_skipped"`
+	ItemsSkipped int `json:"items_skipped" extensions:"x-agent"`
 
 	// Items that failed to sync
-	ItemsFailed int `json:"items_failed"`
+	ItemsFailed int `json:"items_failed" extensions:"x-agent"`
 
 	// Error details if status is "failed"
 	ErrorMessage string `json:"error_message"`
@@ -218,14 +232,6 @@ type DataSourceConfig struct {
 
 	// Connector-specific configuration
 	Settings map[string]interface{} `json:"settings"`
-
-	// MultimodalEnabled mirrors the target knowledge base's VLM/multimodal
-	// setting for the current sync run. The service populates it before each fetch
-	// and it is never persisted (json:"-") — the KB owns the setting. Connectors
-	// use it to decide whether extracting embedded images for OCR is worthwhile:
-	// ingesting an image into a KB without VLM is rejected, so image extraction is
-	// skipped when this is false.
-	MultimodalEnabled bool `json:"-"`
 }
 
 // HasCredentials reports whether the credentials map carries any value at
@@ -273,16 +279,16 @@ func (d *DataSourceConfig) StripNonSecretCredentials(connectorType string) {
 // Resource represents a syncable resource (document, folder, space) from external system
 type Resource struct {
 	// Unique identifier in the external system
-	ExternalID string `json:"external_id"`
+	ExternalID string `json:"external_id" extensions:"x-agent"`
 
 	// Display name
-	Name string `json:"name"`
+	Name string `json:"name" extensions:"x-agent"`
 
 	// Resource type (document, folder, space, page, etc.)
-	Type string `json:"type"`
+	Type string `json:"type" extensions:"x-agent"`
 
 	// Optional description
-	Description string `json:"description"`
+	Description string `json:"description" extensions:"x-agent"`
 
 	// URL to access in external system
 	URL string `json:"url"`
@@ -291,10 +297,10 @@ type Resource struct {
 	ModifiedAt time.Time `json:"modified_at"`
 
 	// For hierarchical resources (parent ID if applicable)
-	ParentID string `json:"parent_id,omitempty"`
+	ParentID string `json:"parent_id,omitempty" extensions:"x-agent"`
 
 	// Whether this resource has children that can be expanded
-	HasChildren bool `json:"has_children,omitempty"`
+	HasChildren bool `json:"has_children,omitempty" extensions:"x-agent"`
 
 	// Additional metadata
 	Metadata map[string]interface{} `json:"metadata,omitempty"`
@@ -322,6 +328,9 @@ type FetchedItem struct {
 
 	// When last modified in external system
 	UpdatedAt time.Time `json:"updated_at"`
+
+	// When created in external system. Zero when the source does not expose it.
+	CreatedAt time.Time `json:"created_at"`
 
 	// Additional metadata to preserve
 	Metadata map[string]string `json:"metadata"`
@@ -421,6 +430,10 @@ type SyncResult struct {
 
 	// Items that failed
 	Failed int `json:"failed"`
+
+	// Deleted items whose KB deletion failed (a subset of Failed). Past the
+	// connector cursor, so normally only a later full sync retries them.
+	DeletionFailed int `json:"deletion_failed,omitempty"`
 
 	// Per-item failure samples (capped), shown in the sync-log UI.
 	Errors []SyncItemError `json:"errors,omitempty"`

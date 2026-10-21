@@ -10,6 +10,7 @@ import (
 	"github.com/Tencent/WeKnora/internal/errors"
 	"github.com/Tencent/WeKnora/internal/event"
 	"github.com/Tencent/WeKnora/internal/logger"
+	"github.com/Tencent/WeKnora/internal/storageurl"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
 	secutils "github.com/Tencent/WeKnora/internal/utils"
@@ -23,10 +24,13 @@ import (
 // @Tags         问答
 // @Accept       json
 // @Produce      text/event-stream
-// @Param        session_id  path      string  true  "会话ID"
-// @Param        message_id  query     string  true  "消息ID"
-// @Success      200         {object}  map[string]interface{}  "流式响应"
+// @Param        session_id     path      string  true   "会话ID"
+// @Param        message_id     query     string  true   "消息ID"
+// @Param        resume_pending_id query  string  false  "等待此审批恢复后的事件流"
+// @Param        resource_urls  query     string  false  "文件引用形式，public 返回可加载直链"  Enums(handle, public)  default(handle)
+// @Success      200            {string}  string  "SSE 事件流"
 // @Failure      404         {object}  errors.AppError         "会话或消息不存在"
+// @Failure      409         {object}  errors.AppError         "审批恢复后的事件流尚未就绪"
 // @Security     Bearer
 // @Security     ApiKeyAuth
 // @Router       /sessions/continue-stream/{session_id} [get]
@@ -53,9 +57,17 @@ func (h *Handler) ContinueStream(c *gin.Context) {
 
 	logger.Infof(ctx, "Continuing stream, session ID: %s, message ID: %s", sessionID, messageID)
 
-	// Verify that the session exists and belongs to this tenant
-	_, err := h.sessionService.GetSession(ctx, sessionID)
+	// Resolve before any SSE header is written so an invalid resource_urls value
+	// is still reportable as a normal 400 JSON error.
+	resourceRewriter, err := h.resolveStreamRewriter(c)
 	if err != nil {
+		logger.Warnf(ctx, "Rejected resource URL mode: %v", err)
+		_ = c.Error(err)
+		return
+	}
+
+	// Verify that the session exists and belongs to this tenant
+	if _, err := h.sessionService.GetSession(ctx, sessionID); err != nil {
 		if stderrors.Is(err, errors.ErrSessionNotFound) {
 			logger.Warnf(ctx, "Session not found, ID: %s", sessionID)
 			c.Error(errors.NewNotFoundError(err.Error()))
@@ -119,6 +131,23 @@ func (h *Handler) ContinueStream(c *gin.Context) {
 		return
 	}
 
+	// A scheduler may not have reset the previous segment yet. Never replay
+	// its terminal event as if the just-approved continuation had completed.
+	if pendingID := c.Query("resume_pending_id"); pendingID != "" && !message.IsCompleted {
+		ready := false
+		for _, evt := range events {
+			if (evt.Type == types.ResponseTypeAgentQuery && evt.Data["resume_pending_id"] == pendingID) ||
+				(evt.Type == types.ResponseTypeRunResumed && evt.Data["pending_id"] == pendingID) {
+				ready = true
+				break
+			}
+		}
+		if !ready {
+			c.JSON(http.StatusConflict, gin.H{"success": false, "error": "The resumed stream is not ready yet"})
+			return
+		}
+	}
+
 	logger.Infof(
 		ctx, "Preparing to replay %d events and continue streaming, session ID: %s, message ID: %s",
 		len(events), sessionID, messageID,
@@ -136,12 +165,11 @@ func (h *Handler) ContinueStream(c *gin.Context) {
 		}
 	}
 
-	// Replay existing events
-	logger.Debugf(ctx, "Replaying %d existing events", len(events))
-	for _, evt := range events {
-		response := buildStreamResponse(evt, message.RequestID)
-		c.SSEvent("message", response)
-		c.Writer.Flush()
+	// Replay existing events, a segment's worth of chunks per frame
+	replay := coalesceReplayEvents(events)
+	logger.Debugf(ctx, "Replaying %d existing events as %d frames", len(events), len(replay))
+	for _, evt := range replay {
+		emitStreamEvent(ctx, c, evt, message.RequestID, resourceRewriter)
 	}
 
 	// If stream is already completed, send final event and return
@@ -155,6 +183,8 @@ func (h *Handler) ContinueStream(c *gin.Context) {
 	logger.Debug(ctx, "Starting event update monitoring")
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
+	heartbeat := time.NewTicker(10 * time.Second)
+	defer heartbeat.Stop()
 
 	for {
 		select {
@@ -162,11 +192,15 @@ func (h *Handler) ContinueStream(c *gin.Context) {
 			logger.Debug(ctx, "Client connection closed")
 			return
 
+		case <-heartbeat.C:
+			c.SSEvent("message", gin.H{"response_type": "heartbeat"})
+			c.Writer.Flush()
 		case <-ticker.C:
 			// Get new events from current offset
 			newEvents, newOffset, err := h.streamManager.GetEvents(ctx, sessionID, messageID, currentOffset)
 			if err != nil {
 				logger.Errorf(ctx, "Failed to get new events: %v", err)
+				flushHeldStreamContent(ctx, c, message.RequestID, resourceRewriter)
 				return
 			}
 
@@ -178,9 +212,7 @@ func (h *Handler) ContinueStream(c *gin.Context) {
 					streamCompletedNow = true
 				}
 
-				response := buildStreamResponse(evt, message.RequestID)
-				c.SSEvent("message", response)
-				c.Writer.Flush()
+				emitStreamEvent(ctx, c, evt, message.RequestID, resourceRewriter)
 			}
 
 			// Update offset
@@ -276,6 +308,13 @@ func (h *Handler) StopSession(c *gin.Context) {
 		return
 	}
 
+	if h.stopCollaboration != nil {
+		if err := h.stopCollaboration(ctx, sessionID, assistantMessageID); err != nil {
+			c.JSON(500, gin.H{"error": "Failed to stop delegated tasks"})
+			return
+		}
+	}
+
 	// Check if message is already completed (stopped)
 	if message.IsCompleted {
 		logger.Infof(ctx, "Message %s is already completed, no need to stop", assistantMessageID)
@@ -326,12 +365,20 @@ func (h *Handler) handleAgentEventsForSSE(
 	sessionID, assistantMessageID, requestID string,
 	eventBus *event.EventBus,
 	waitForTitle bool,
+	resourceRewriter *storageurl.StreamRewriter,
 ) {
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
+	heartbeat := time.NewTicker(10 * time.Second)
+	defer heartbeat.Stop()
 
 	lastOffset := 0
 	log := logger.GetLogger(ctx)
+	// Agent mode releases the sandbox turn lease, and therefore cancels ctx,
+	// before the completion event is published. Polling Redis with that
+	// context drops the terminal event and the client waits at the end of
+	// the answer. Client disconnect is still observed on the request below.
+	pollCtx := context.WithoutCancel(ctx)
 
 	log.Infof("Starting pull-based SSE streaming for session=%s, message=%s", sessionID, assistantMessageID)
 
@@ -346,9 +393,12 @@ func (h *Handler) handleAgentEventsForSSE(
 			)
 			return
 
+		case <-heartbeat.C:
+			c.SSEvent("message", gin.H{"response_type": "heartbeat"})
+			c.Writer.Flush()
 		case <-ticker.C:
 			// Get new events from StreamManager using offset
-			events, newOffset, err := h.streamManager.GetEvents(ctx, sessionID, assistantMessageID, lastOffset)
+			events, newOffset, err := h.streamManager.GetEvents(pollCtx, sessionID, assistantMessageID, lastOffset)
 			if err != nil {
 				log.Warnf("Failed to get events from stream: %v", err)
 				continue
@@ -375,6 +425,12 @@ func (h *Handler) handleAgentEventsForSSE(
 						})
 					}
 
+					// Release any buffered tail first: the answer generated
+					// before the stop is still the user's content, and in
+					// public resource URL mode part of it may be sitting in
+					// the holdback buffer.
+					flushHeldStreamContent(ctx, c, requestID, resourceRewriter)
+
 					// Send stop notification to frontend
 					c.SSEvent("message", &types.StreamResponse{
 						ID:           requestID,
@@ -386,9 +442,6 @@ func (h *Handler) handleAgentEventsForSSE(
 					return
 				}
 
-				// Build StreamResponse from StreamEvent
-				response := buildStreamResponse(evt, requestID)
-
 				// Check for completion event
 				if evt.Type == "complete" {
 					streamCompleted = true
@@ -399,14 +452,16 @@ func (h *Handler) handleAgentEventsForSSE(
 					titleReceived = true
 				}
 
-				// Check if connection is still alive before writing
+				// Check if connection is still alive before writing. Build the
+				// payload only after this check: in public resource URL mode
+				// building consumes the chunk into the holdback buffer, so an
+				// early return here would drop it.
 				if c.Request.Context().Err() != nil {
 					log.Info("Connection closed during event sending, stopping")
 					return
 				}
 
-				c.SSEvent("message", response)
-				c.Writer.Flush()
+				emitStreamEvent(ctx, c, evt, requestID, resourceRewriter)
 			}
 
 			// Update offset
@@ -436,9 +491,7 @@ func (h *Handler) handleAgentEventsForSSE(
 							}
 							if len(events) > 0 {
 								for _, evt := range events {
-									response := buildStreamResponse(evt, requestID)
-									c.SSEvent("message", response)
-									c.Writer.Flush()
+									emitStreamEvent(ctx, c, evt, requestID, resourceRewriter)
 									// If we got the title, we can exit
 									if evt.Type == types.ResponseTypeSessionTitle {
 										log.Infof("Title event received: %s", evt.Content)

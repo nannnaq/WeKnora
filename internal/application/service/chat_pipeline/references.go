@@ -2,17 +2,16 @@ package chatpipeline
 
 import (
 	"context"
+	"github.com/Tencent/WeKnora/internal/searchutil"
 	"html"
 	"strings"
 	"unicode/utf8"
 
+	"github.com/Tencent/WeKnora/internal/logger"
 	"github.com/Tencent/WeKnora/internal/modelcontext"
 	"github.com/Tencent/WeKnora/internal/models/chat"
-	"github.com/Tencent/WeKnora/internal/searchutil"
 	"github.com/Tencent/WeKnora/internal/types"
 )
-
-const apiHybridContextRuneBudget = 112_000
 
 // prepareMessagesWithModelContext replaces positional retrieval IDs with
 // request-local model handles. Persisted rendered_content remains unchanged;
@@ -21,7 +20,7 @@ func prepareMessagesWithModelContext(
 	ctx context.Context,
 	chatManage *types.ChatManage,
 ) ([]chat.Message, *modelcontext.Registry) {
-	citationsEnabled := chatManage == nil || chatManage.CitationsEnabled()
+	citationsEnabled := chatManage == nil || (chatManage.CitationsEnabled() && !chatManage.APIHybridPureAnswer)
 	registry := modelcontext.NewRegistry(citationsEnabled)
 	if chatManage == nil {
 		return nil, registry
@@ -34,7 +33,7 @@ func prepareMessagesWithModelContext(
 		return messages, registry
 	}
 
-	ordered := orderedPipelineReferences(chatManage)
+	ordered := expandCitationSources(orderedPipelineReferences(chatManage))
 	if chatManage.APIHybridPureAnswer {
 		ordered = trimAPIHybridKnowledgeContext(ctx, chatManage, ordered)
 	}
@@ -84,13 +83,12 @@ func prepareMessagesWithModelContext(
 		registry.RegisterSearchResults(knowledgeResults)
 		var contextParts []string
 		if len(knowledgeRows) > 0 {
-			contextParts = append(contextParts, registry.ModelToolResult(&types.ToolResult{
-				Success: true,
-				Data: map[string]interface{}{
-					"display_type": "search_results",
-					"results":      knowledgeRows,
-				},
-			}))
+			data := map[string]interface{}{"display_type": "search_results", "results": knowledgeRows}
+			if truncation := chatManage.Truncation; truncation != nil {
+				data["retrieval_shown"] = len(knowledgeRows)
+				data["retrieval_candidates"] = truncation.Candidates
+			}
+			contextParts = append(contextParts, registry.ModelToolResult(&types.ToolResult{Success: true, Data: data}))
 		}
 		if len(webRows) > 0 {
 			contextParts = append(contextParts, registry.ModelToolResult(&types.ToolResult{
@@ -102,6 +100,9 @@ func prepareMessagesWithModelContext(
 			}))
 		}
 		modelContexts = strings.Join(contextParts, "\n")
+		if strings.TrimSpace(modelContexts) == "" && len(chatManage.MergeResult) > 0 {
+			modelContexts = "Retrieved source bodies could not be verified. Do not cite or infer facts from unavailable retrieval evidence."
+		}
 	}
 	realtimeContext := strings.TrimSpace(chatManage.RealtimeContext)
 	combinedParts := make([]string, 0, 2)
@@ -151,12 +152,68 @@ func prepareMessagesWithModelContext(
 		"realtime_context_len": len(realtimeContext),
 		"realtime_injected":    realtimeInjected,
 	})
+	if !chatManage.APIHybridPureAnswer && chatManage.ChatModelSupportsVision && len(chatManage.ContextImages) > 0 {
+		count := min(len(chatManage.ContextImageChunkIDs), len(chatManage.ContextImages))
+		messages[last].Content += registry.ImageSourcesNote(chatManage.ContextImageChunkIDs[:count], len(chatManage.Images))
+	}
+
 	return messages, registry
 }
 
-// trimAPIHybridKnowledgeContext preserves realtime evidence and response room
-// for the 128K chat model window. Rune counting is deliberately conservative
-// for Chinese, where a rune is often close to one token.
+func isPipelineWebReference(result *types.SearchResult) bool {
+	if result == nil {
+		return false
+	}
+	return strings.EqualFold(result.ChunkType, string(types.ChunkTypeWebSearch)) ||
+		strings.EqualFold(result.KnowledgeSource, "web_search")
+}
+
+func orderedPipelineReferences(chatManage *types.ChatManage) []*types.SearchResult {
+	if chatManage == nil {
+		return nil
+	}
+	if !chatManage.FAQPriorityEnabled {
+		return chatManage.MergeResult
+	}
+	ordered := make([]*types.SearchResult, 0, len(chatManage.MergeResult))
+	for _, result := range chatManage.MergeResult {
+		if result != nil && result.ChunkType == string(types.ChunkTypeFAQ) {
+			ordered = append(ordered, result)
+		}
+	}
+	for _, result := range chatManage.MergeResult {
+		if result != nil && result.ChunkType != string(types.ChunkTypeFAQ) {
+			ordered = append(ordered, result)
+		}
+	}
+	return ordered
+}
+
+func firstPipelineTitle(result *types.SearchResult) string {
+	if result == nil {
+		return ""
+	}
+	if result.KnowledgeTitle != "" {
+		return result.KnowledgeTitle
+	}
+	return result.KnowledgeFilename
+}
+
+// reportModelContextLeaks logs any durable identifier that survived encoding
+// so the producing prompt or tool can be fixed; see modelcontext/leaks.go.
+func reportModelContextLeaks(
+	ctx context.Context, scope string, registry *modelcontext.Registry, messages []chat.Message,
+) {
+	leaks := registry.LeakedIdentifiers(messages)
+	if len(leaks) == 0 {
+		return
+	}
+	logger.Warnf(ctx, "[%s][ModelContext] %d message field(s) carry raw identifiers after encoding: %s",
+		scope, len(leaks), modelcontext.SummarizeLeaks(leaks))
+}
+
+const apiHybridContextRuneBudget = 112_000
+
 func trimAPIHybridKnowledgeContext(
 	ctx context.Context, chatManage *types.ChatManage, ordered []*types.SearchResult,
 ) []*types.SearchResult {
@@ -235,43 +292,4 @@ func apiHybridRowString(row map[string]interface{}, key string) string {
 	}
 	value, _ := row[key].(string)
 	return value
-}
-
-func isPipelineWebReference(result *types.SearchResult) bool {
-	if result == nil {
-		return false
-	}
-	return strings.EqualFold(result.ChunkType, string(types.ChunkTypeWebSearch)) ||
-		strings.EqualFold(result.KnowledgeSource, "web_search")
-}
-
-func orderedPipelineReferences(chatManage *types.ChatManage) []*types.SearchResult {
-	if chatManage == nil {
-		return nil
-	}
-	if !chatManage.FAQPriorityEnabled {
-		return chatManage.MergeResult
-	}
-	ordered := make([]*types.SearchResult, 0, len(chatManage.MergeResult))
-	for _, result := range chatManage.MergeResult {
-		if result != nil && result.ChunkType == string(types.ChunkTypeFAQ) {
-			ordered = append(ordered, result)
-		}
-	}
-	for _, result := range chatManage.MergeResult {
-		if result != nil && result.ChunkType != string(types.ChunkTypeFAQ) {
-			ordered = append(ordered, result)
-		}
-	}
-	return ordered
-}
-
-func firstPipelineTitle(result *types.SearchResult) string {
-	if result == nil {
-		return ""
-	}
-	if result.KnowledgeTitle != "" {
-		return result.KnowledgeTitle
-	}
-	return result.KnowledgeFilename
 }

@@ -21,6 +21,8 @@ type TenantService interface {
 	ListTenants(ctx context.Context) ([]*types.Tenant, error)
 	// UpdateTenant updates a tenant
 	UpdateTenant(ctx context.Context, tenant *types.Tenant) (*types.Tenant, error)
+	// UpdateTenantProfile changes only supplied display fields, including an empty description.
+	UpdateTenantProfile(ctx context.Context, id uint64, name, description *string) (*types.Tenant, error)
 	// DeleteTenant deletes a tenant
 	DeleteTenant(ctx context.Context, id uint64) error
 	// ListAllTenants lists all tenants (for users with cross-tenant access permission)
@@ -54,6 +56,8 @@ type TenantRepository interface {
 	SearchTenants(ctx context.Context, keyword string, tenantID uint64, page, pageSize int) ([]*types.Tenant, int64, error)
 	// UpdateTenant updates a tenant
 	UpdateTenant(ctx context.Context, tenant *types.Tenant) error
+	// UpdateTenantProfile changes only supplied display fields.
+	UpdateTenantProfile(ctx context.Context, id uint64, name, description *string) error
 	// DeleteTenant deletes a tenant
 	DeleteTenant(ctx context.Context, id uint64) error
 	// AdjustStorageUsed adjusts the storage used for a tenant
@@ -77,11 +81,24 @@ type TenantAPIKeyCreateResult struct {
 	Token  string
 }
 
+// TenantAPIKeyUpdateRequest 修改已创建租户 API Key 的可配置属性。
+// 配置语义与创建接口一致：FullAccess 为 true 时忽略细粒度能力和知识库范围。
+type TenantAPIKeyUpdateRequest struct {
+	TenantID         uint64
+	APIKeyID         uint64
+	Name             string
+	FullAccess       bool
+	KnowledgeBaseIDs []string
+	Capabilities     []string
+	ExpiresAt        *time.Time
+}
+
 type TenantAPIKeyRepository interface {
 	CreateAPIKey(ctx context.Context, key *types.TenantAPIKey) error
 	GetAPIKeyByHash(ctx context.Context, hash string) (*types.TenantAPIKey, error)
 	ListAPIKeys(ctx context.Context, tenantID uint64) ([]*types.TenantAPIKey, error)
 	ListPlatformAPIKeys(ctx context.Context) ([]*types.TenantAPIKey, error)
+	UpdateAPIKey(ctx context.Context, tenantID uint64, id uint64, key *types.TenantAPIKey) (*types.TenantAPIKey, error)
 	RevokeAPIKey(ctx context.Context, tenantID uint64, id uint64) error
 	RevokePlatformAPIKey(ctx context.Context, id uint64) error
 	UpdateAPIKeyHash(ctx context.Context, id uint64, hash string) error
@@ -100,6 +117,7 @@ type TenantAPIKeyService interface {
 	AuthenticateAPIKey(ctx context.Context, token string) (*types.TenantAPIKey, error)
 	ListAPIKeys(ctx context.Context, tenantID uint64) ([]*types.TenantAPIKey, error)
 	ListPlatformAPIKeys(ctx context.Context) ([]*types.TenantAPIKey, error)
+	UpdateAPIKey(ctx context.Context, req TenantAPIKeyUpdateRequest) (*types.TenantAPIKey, error)
 	RevokeAPIKey(ctx context.Context, tenantID uint64, id uint64) error
 	RevokePlatformAPIKey(ctx context.Context, id uint64) error
 	// BackfillMissingKeyHashes computes and persists the SHA-256 key_hash

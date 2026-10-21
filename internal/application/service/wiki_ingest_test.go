@@ -9,10 +9,33 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
+	"github.com/redis/go-redis/v9"
+	"github.com/stretchr/testify/require"
+
 	"github.com/Tencent/WeKnora/internal/agent"
 	"github.com/Tencent/WeKnora/internal/models/chat"
 	"github.com/Tencent/WeKnora/internal/types"
 )
+
+func TestWikiInflightSlotReleasedWhenTaskContextCanceled(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = rdb.Close() })
+
+	svc := &wikiIngestService{redisClient: rdb}
+	ctx, cancel := context.WithCancel(context.Background())
+	release, granted := svc.reserveInflightSlot(ctx, "kb-1", 1)
+	require.True(t, granted)
+	t.Cleanup(release)
+	require.Equal(t, int64(1), rdb.ZCard(context.Background(), wikiInflightPrefix+"kb-1").Val())
+
+	cancel()
+
+	require.Eventually(t, func() bool {
+		return rdb.ZCard(context.Background(), wikiInflightPrefix+"kb-1").Val() == 0
+	}, time.Second, 10*time.Millisecond, "canceled tasks must not retain an inflight slot")
+}
 
 func TestSlugify(t *testing.T) {
 	tests := []struct {
@@ -610,4 +633,27 @@ func (r *wikiPendingRepoForCleanupTest) DeleteByDedupKey(
 	string,
 ) error {
 	return nil
+}
+
+// TestGenerateWithTemplateSetsMaxTokens is a regression for #2604: without an
+// explicit MaxTokens, DeepSeek-class providers default to 8192 completion
+// tokens and truncate combined wiki extraction JSON mid-field.
+func TestGenerateWithTemplateSetsMaxTokens(t *testing.T) {
+	model := &templateCaptureChatModel{response: `{"entities":[],"concepts":[]}`}
+	service := &wikiIngestService{}
+	_, err := service.generateWithTemplate(
+		context.Background(),
+		model,
+		`Content={{.Content}}`,
+		map[string]string{"Content": "hello"},
+	)
+	if err != nil {
+		t.Fatalf("generateWithTemplate() error = %v", err)
+	}
+	if model.options.MaxTokens != wikiLLMMaxTokens {
+		t.Fatalf("MaxTokens = %d, want %d", model.options.MaxTokens, wikiLLMMaxTokens)
+	}
+	if model.options.Thinking == nil || *model.options.Thinking {
+		t.Fatalf("Thinking should be non-nil false, got %#v", model.options.Thinking)
+	}
 }

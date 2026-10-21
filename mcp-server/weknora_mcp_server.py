@@ -37,6 +37,9 @@ except ValueError:
     logger.warning("WEKNORA_CHAT_TIMEOUT is not a valid integer; falling back to 300s.")
     WEKNORA_CHAT_TIMEOUT = 300
 
+# Bound the data accumulated while waiting for an SSE event's blank line.
+MAX_SSE_EVENT_BYTES = 8 * 1024 * 1024
+
 # Network transport defaults kept for backward compatibility with pre-2.x deployments.
 SSE_MESSAGE_PATH = "/sse/messages/"
 STREAMABLE_HTTP_STATELESS = True
@@ -97,6 +100,30 @@ class MCPAuthMiddleware:
             return
 
         await self.app(scope, receive, send)
+
+
+def _normalize_kb_entries(resp: object) -> list[Dict]:
+    """Flatten owned and shared knowledge-base list API responses.
+
+    GET /knowledge-bases returns ``data: [{id, name, ...}, ...]`` (see
+    KnowledgeBaseHandler.buildKBListResponse).
+
+    GET /shared-knowledge-bases returns ``data: [{knowledge_base: {id, name,
+    ...}, share_id, ...}, ...]`` (see organization handler sharedKBRow).
+    """
+    data = resp.get("data", resp) if isinstance(resp, dict) else resp
+    if isinstance(data, dict):
+        data = data.get("list", data.get("items", []))
+    out: list[Dict] = []
+    for item in (data or []):
+        if not isinstance(item, dict):
+            continue
+        nested = item.get("knowledge_base")
+        if isinstance(nested, dict) and nested.get("id"):
+            out.append(nested)
+        elif item.get("id"):
+            out.append(item)
+    return out
 
 
 class WeKnoraClient:
@@ -194,6 +221,10 @@ class WeKnoraClient:
         """List all knowledge bases"""
         return self._request("GET", "/knowledge-bases")
 
+    def list_shared_knowledge_bases(self) -> Dict:
+        """List knowledge bases shared from other workspaces"""
+        return self._request("GET", "/shared-knowledge-bases")
+
     def get_knowledge_base(self, kb_id: str) -> Dict:
         """Get knowledge base details"""
         return self._request("GET", f"/knowledge-bases/{kb_id}")
@@ -250,17 +281,15 @@ class WeKnoraClient:
         """
         if self._UUID_RE.match(kb_id_or_name):
             return kb_id_or_name
-        resp = self.list_knowledge_bases()
-        kbs = resp.get("data", resp) if isinstance(resp, dict) else resp
-        if isinstance(kbs, dict):
-            kbs = kbs.get("list", kbs.get("items", []))
+        # Search own + shared knowledge bases for a name match
         needle = kb_id_or_name.lower()
-        for kb in (kbs or []):
-            if isinstance(kb, dict) and kb.get("name", "").lower() == needle:
-                return kb["id"]
+        for source in (self.list_knowledge_bases, self.list_shared_knowledge_bases):
+            for kb in _normalize_kb_entries(source()):
+                if kb.get("name", "").lower() == needle:
+                    return kb["id"]
         raise ValueError(
             f"Knowledge base {kb_id_or_name!r} not found. "
-            "Use list_knowledge_bases to see available IDs and names."
+            "Use list_knowledge_bases or list_shared_knowledge_bases to see available IDs and names."
         )
 
     def hybrid_search(self, kb_id: str, query: str, config: Dict) -> Dict:
@@ -275,13 +304,23 @@ class WeKnoraClient:
 
     # Knowledge Management - Methods for creating and managing knowledge entries
     def create_knowledge_from_file(
-        self, kb_id: str, file_path: str, enable_multimodel: bool = True
+        self,
+        kb_id: str,
+        file_path: str,
+        enable_multimodel: bool = True,
+        file_name: str = "",
     ) -> Dict:
-        """Create knowledge from a local file with optional multimodal processing"""
+        """Create knowledge from a local file with optional multimodal processing.
+
+        ``file_name`` may be a path-qualified name (``docs/spec/design.pdf``);
+        the backend splits it into ``folder_path`` + display name.
+        """
         safe_path = resolve_upload_file_path(file_path)
         with open(safe_path, "rb") as f:
             files = {"file": f}
             data = {"enable_multimodel": str(enable_multimodel).lower()}
+            if file_name:
+                data["fileName"] = file_name
             # Temporarily remove Content-Type header for multipart/form-data request
             # (requests will set it automatically with boundary)
             headers = self.session.headers.copy()
@@ -309,9 +348,70 @@ class WeKnoraClient:
             "POST", f"/knowledge-bases/{kb_id}/knowledge/url", json=data
         )
 
-    def list_knowledge(self, kb_id: str, page: int = 1, page_size: int = 20) -> Dict:
-        """List knowledge in a knowledge base"""
+    def create_knowledge_from_text(
+        self,
+        kb_id: str,
+        title: str,
+        content: str,
+        tag_ids: list[str] | None = None,
+        status: str = "publish",
+    ) -> Dict:
+        """Create a knowledge entry from raw Markdown text (manual knowledge).
+
+        ``status`` defaults to ``"publish"`` so the entry is chunked, embedded
+        and made searchable immediately, which suits API/MCP callers that have
+        no UI to publish drafts. Pass ``"draft"`` to save without indexing.
+        """
+        data = {
+            "title": title,
+            "content": content,
+            "status": status,
+        }
+        if tag_ids:
+            data["tag_ids"] = tag_ids
+        return self._request(
+            "POST", f"/knowledge-bases/{kb_id}/knowledge/manual", json=data
+        )
+
+    def update_knowledge_from_text(
+        self,
+        knowledge_id: str,
+        content: str,
+        title: str = "",
+        status: str = "publish",
+    ) -> Dict:
+        """Update an existing manual Markdown knowledge entry.
+
+        An empty ``title`` keeps the current title. ``status`` defaults to
+        ``"publish"`` so the updated content is re-indexed immediately; pass
+        ``"draft"`` to save it without indexing.
+        """
+        data = {
+            "title": title,
+            "content": content,
+            "status": status,
+        }
+        return self._request("PUT", f"/knowledge/manual/{knowledge_id}", json=data)
+
+    def list_knowledge(
+        self,
+        kb_id: str,
+        page: int = 1,
+        page_size: int = 20,
+        folder_path: str | None = None,
+        folder_scope: str = "",
+    ) -> Dict:
+        """List knowledge in a knowledge base.
+
+        ``folder_path`` filters to one folder (empty string = root).
+        ``folder_scope`` is passed through when the backend supports
+        scoped folder listing.
+        """
         params = {"page": page, "page_size": page_size}
+        if folder_path is not None:
+            params["folder_path"] = folder_path
+        if folder_scope:
+            params["folder_scope"] = folder_scope
         return self._request(
             "GET", f"/knowledge-bases/{kb_id}/knowledge", params=params
         )
@@ -410,6 +510,7 @@ class WeKnoraClient:
           data: {"response_type": "references", "knowledge_references": [...]}
           data: {"response_type": "complete"}
         
+        A blank line ends each event; multiple data lines are joined with newlines.
         We accumulate answer chunks and extract references, returning them as a dict.
         """
         try:
@@ -419,24 +520,40 @@ class WeKnoraClient:
                 url, json=body, stream=True,
                 timeout=(10, WEKNORA_CHAT_TIMEOUT),
             )
-            response.raise_for_status()
 
             answer_chunks: list = []
             references: list = []
             debug_events: list = []
+            data_lines: list[str] = []
+            event_bytes = 0
 
             # Use context manager to ensure the connection is returned to the pool
             # even when breaking early on a 'complete' event.
             with response:
+                response.raise_for_status()
                 for raw_line in response.iter_lines():
-                    if not raw_line:
-                        continue
                     if isinstance(raw_line, bytes):
                         raw_line = raw_line.decode("utf-8")
-                    # Each SSE event is prefixed with "data: " followed by JSON payload
-                    if not raw_line.startswith("data:"):
+                    if raw_line:
+                        field, _, value = raw_line.partition(":")
+                        if field == "data":
+                            # SSE removes at most one leading space from a value.
+                            if value.startswith(" "):
+                                value = value[1:]
+                            event_bytes += len(value.encode("utf-8")) + 1
+                            if event_bytes > MAX_SSE_EVENT_BYTES:
+                                raise RequestException(
+                                    f"SSE event exceeds {MAX_SSE_EVENT_BYTES} bytes"
+                                )
+                            data_lines.append(value)
                         continue
-                    payload = raw_line[5:].lstrip(" ")
+                    # Dispatch only at the blank-line boundary. Incomplete data
+                    # at EOF is discarded, as required by the SSE protocol.
+                    if not data_lines:
+                        continue
+                    payload = "\n".join(data_lines)
+                    data_lines = []
+                    event_bytes = 0
                     try:
                         event_data = json.loads(payload)
                     except json.JSONDecodeError:
@@ -624,8 +741,14 @@ def create_knowledge_base(
 
 @mcp.tool()
 def list_knowledge_bases() -> dict:
-    """List all knowledge bases."""
+    """List all knowledge bases in the current workspace."""
     return client.list_knowledge_bases()
+
+
+@mcp.tool()
+def list_shared_knowledge_bases() -> dict:
+    """List knowledge bases shared from other workspaces."""
+    return client.list_shared_knowledge_bases()
 
 
 @mcp.tool()
@@ -651,7 +774,7 @@ def hybrid_search(
     """Perform hybrid (vector + keyword) search in a knowledge base.
 
     kb_id may be a UUID or a knowledge-base name (resolved automatically).
-    Use list_knowledge_bases to discover available knowledge bases.
+    Use list_knowledge_bases or list_shared_knowledge_bases to discover available knowledge bases.
     """
     config = {
         "vector_threshold": vector_threshold,
@@ -667,9 +790,18 @@ def create_knowledge_from_file(
     kb_id: str,
     file_path: str,
     enable_multimodel: bool = True,
+    file_name: str = "",
 ) -> dict:
-    """Create knowledge from a local file on the server filesystem."""
-    return client.create_knowledge_from_file(kb_id, file_path, enable_multimodel)
+    """Create knowledge from a local file on the server filesystem.
+
+    ``file_name`` is optional. Pass a path-qualified name such as
+    ``docs/spec/design.pdf`` to place the entry under a knowledge folder
+    (backend splits folder path + display name). Omit it to keep the
+    original filename at the knowledge-base root.
+    """
+    return client.create_knowledge_from_file(
+        kb_id, file_path, enable_multimodel, file_name=file_name
+    )
 
 
 @mcp.tool()
@@ -683,9 +815,61 @@ def create_knowledge_from_url(
 
 
 @mcp.tool()
-def list_knowledge(kb_id: str, page: int = 1, page_size: int = 20) -> dict:
-    """List knowledge entries in a knowledge base."""
-    return client.list_knowledge(kb_id, page, page_size)
+def create_knowledge_from_text(
+    kb_id: str,
+    title: str,
+    content: str,
+    tag_ids: list[str] | None = None,
+    status: str = "publish",
+) -> dict:
+    """Create a knowledge entry from raw Markdown text.
+
+    Use this when you have the document content directly (e.g. an abstract or
+    pasted text) instead of a file path or URL. ``kb_id`` may be a UUID or a
+    knowledge-base name (resolved automatically). ``title`` and ``content``
+    are required. ``status`` defaults to ``"publish"`` so the entry is indexed
+    and searchable immediately; pass ``"draft"`` to save without indexing.
+    """
+    return client.create_knowledge_from_text(
+        client.resolve_kb_id(kb_id), title, content, tag_ids=tag_ids, status=status
+    )
+
+
+@mcp.tool()
+def update_knowledge_from_text(
+    knowledge_id: str,
+    content: str,
+    title: str = "",
+    status: str = "publish",
+) -> dict:
+    """Update an existing manual Markdown knowledge entry.
+
+    ``knowledge_id`` is the ID returned by ``create_knowledge_from_text`` or
+    ``list_knowledge``. ``content`` is required. Leave ``title`` empty to keep
+    the current title. ``status`` defaults to ``"publish"`` so the new content
+    is re-indexed; pass ``"draft"`` to save without indexing.
+    """
+    return client.update_knowledge_from_text(
+        knowledge_id, content, title=title, status=status
+    )
+
+
+@mcp.tool()
+def list_knowledge(
+    kb_id: str,
+    page: int = 1,
+    page_size: int = 20,
+    folder_path: str | None = None,
+    folder_scope: str = "",
+) -> dict:
+    """List knowledge entries in a knowledge base.
+
+    ``folder_path`` optionally filters to one folder (``""`` = root).
+    ``folder_scope`` is forwarded when the backend supports scoped listing.
+    """
+    return client.list_knowledge(
+        kb_id, page, page_size, folder_path=folder_path, folder_scope=folder_scope
+    )
 
 
 @mcp.tool()
@@ -781,7 +965,7 @@ async def chat(
 
     ALWAYS provide knowledge_base_ids (names like 'my-knowledge-base' or UUIDs) so
     retrieval can run — without them the answer is based on LLM knowledge only.
-    Use list_knowledge_bases to discover available knowledge bases.
+    Use list_knowledge_bases or list_shared_knowledge_bases to discover available knowledge bases.
     For multi-step reasoning or tool-calling use agent_chat instead.
     """
     kb_ids = (
@@ -836,14 +1020,18 @@ async def agent_chat(
                 mode in ("selected", "") and not built_in_kbs
             )
             if needs_kbs:
-                kb_list = client.list_knowledge_bases()
-                kbs = kb_list.get("data") or kb_list
-                if isinstance(kbs, dict):
-                    kbs = kbs.get("list", kbs.get("items", []))
+                all_kbs = _normalize_kb_entries(
+                    client.list_knowledge_bases()
+                ) + _normalize_kb_entries(client.list_shared_knowledge_bases())
+                seen_ids: set[str] = set()
+                unique_kbs: list[Dict] = []
+                for kb in all_kbs:
+                    kb_id = kb.get("id")
+                    if kb_id and kb_id not in seen_ids:
+                        seen_ids.add(kb_id)
+                        unique_kbs.append(kb)
                 kb_summary = ", ".join(
-                    f"{kb.get('name')} ({kb.get('id')})"
-                    for kb in (kbs or [])[:10]
-                    if isinstance(kb, dict)
+                    f"{kb.get('name')} ({kb.get('id')})" for kb in unique_kbs[:10]
                 )
                 raise ValueError(
                     f"Agent '{agent_id}' has kb_selection_mode='{mode}' with no built-in "

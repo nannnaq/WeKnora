@@ -28,7 +28,16 @@ func NewOllamaVLM(config *Config, ollamaService *ollama.OllamaService) (*OllamaV
 	}, nil
 }
 
-func (v *OllamaVLM) buildChatRequest(imgBytesList [][]byte, prompt string) *ollamaapi.ChatRequest {
+// Predict sends an image with a text prompt to the Ollama vision model.
+func (v *OllamaVLM) Predict(ctx context.Context, imgBytesList [][]byte, prompt string) (string, error) {
+	return v.PredictWithOptions(ctx, imgBytesList, prompt, nil)
+}
+
+// PredictWithOptions carries the thinking preference in Ollama's top-level
+// Think field; sampling parameters remain in Options.
+func (v *OllamaVLM) PredictWithOptions(
+	ctx context.Context, imgBytesList [][]byte, prompt string, opts *PredictOptions,
+) (string, error) {
 	streamFlag := false
 	var images []ollamaapi.ImageData
 	for _, imgBytes := range imgBytesList {
@@ -37,7 +46,7 @@ func (v *OllamaVLM) buildChatRequest(imgBytesList [][]byte, prompt string) *olla
 		}
 	}
 
-	return &ollamaapi.ChatRequest{
+	chatReq := &ollamaapi.ChatRequest{
 		Model: v.modelName,
 		Messages: []ollamaapi.Message{
 			{
@@ -48,19 +57,16 @@ func (v *OllamaVLM) buildChatRequest(imgBytesList [][]byte, prompt string) *olla
 		},
 		Stream:  &streamFlag,
 		Options: map[string]interface{}{"temperature": 0.1},
-		Think:   &ollamaapi.ThinkValue{Value: false},
 	}
-}
-
-// Predict sends an image with a text prompt to the Ollama vision model.
-func (v *OllamaVLM) Predict(ctx context.Context, imgBytesList [][]byte, prompt string) (string, error) {
-	chatReq := v.buildChatRequest(imgBytesList, prompt)
+	if opts != nil && opts.Thinking != nil {
+		chatReq.Think = &ollamaapi.ThinkValue{Value: *opts.Thinking}
+	}
 
 	totalImageSize := 0
 	for _, img := range imgBytesList {
 		totalImageSize += len(img)
 	}
-	logger.Infof(ctx, "[VLM] Calling Ollama API, model=%s, numImages=%d, totalImageSize=%d", v.modelName, len(chatReq.Messages[0].Images), totalImageSize)
+	logger.Infof(ctx, "[VLM] Calling Ollama API, model=%s, numImages=%d, totalImageSize=%d", v.modelName, len(images), totalImageSize)
 
 	var result string
 	err := v.ollamaService.Chat(ctx, chatReq, func(resp ollamaapi.ChatResponse) error {

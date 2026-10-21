@@ -5,9 +5,11 @@ import (
 	"context"
 	"crypto/hmac"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
+	"net"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -30,11 +32,15 @@ const textMessageType = 2
 const markdownFormatType = "markdown"
 
 // Compile-time check.
-var _ im.Adapter = (*Adapter)(nil)
-var _ im.FileDownloader = (*Adapter)(nil)
+var (
+	_ im.Adapter        = (*Adapter)(nil)
+	_ im.FileDownloader = (*Adapter)(nil)
+)
 
-var yunzhijiaAuthURL = "https://yunzhijia.com/api/oauth2_v12/auth/getAppAccessToken"
-var yunzhijiaDownloadFileBaseURL = "https://yunzhijia.com/gateway/docrest/doc/file/downloadfileOpen"
+var (
+	yunzhijiaAuthURL             = "https://yunzhijia.com/api/oauth2_v12/auth/getAppAccessToken"
+	yunzhijiaDownloadFileBaseURL = "https://yunzhijia.com/gateway/docrest/doc/file/downloadfileOpen"
+)
 
 var validateDownloadFileURL = func(rawURL string) error {
 	_, err := validateEndpointURL(rawURL, "https", "yunzhijia.com")
@@ -44,6 +50,11 @@ var validateDownloadFileURL = func(rawURL string) error {
 // maxDownloadFileSize caps the size of a file downloaded from Yunzhijia and read
 // into memory, to avoid unbounded memory usage from a large/malicious response.
 const maxDownloadFileSize = 32 << 20 // 32 MiB
+
+const (
+	attachmentDownloadAttempts = 2
+	attachmentRetryDelay       = 500 * time.Millisecond
+)
 
 // maxDownloadRedirects limits how many redirects DownloadFile follows manually.
 // The shared httpClient disables automatic redirects (SSRF safety), but the
@@ -100,9 +111,10 @@ func (a *Adapter) HandleURLVerification(c *gin.Context) bool {
 // If secret is not configured, verification is skipped.
 func (a *Adapter) VerifyCallback(c *gin.Context) error {
 	if a.secret == "" {
-		return nil
+		return fmt.Errorf("webhook verification secret is required")
 	}
 
+	im.LimitWebhookBody(c)
 	bodyBytes, err := io.ReadAll(c.Request.Body)
 	if err != nil {
 		return fmt.Errorf("read body: %w", err)
@@ -137,6 +149,7 @@ func (a *Adapter) VerifyCallback(c *gin.Context) error {
 // ParseCallback parses a Yunzhijia webhook callback into an IncomingMessage.
 // Returns nil for non-text messages or empty content.
 func (a *Adapter) ParseCallback(c *gin.Context) (*im.IncomingMessage, error) {
+	im.LimitWebhookBody(c)
 	bodyBytes, err := io.ReadAll(c.Request.Body)
 	if err != nil {
 		return nil, fmt.Errorf("read body: %w", err)
@@ -161,6 +174,12 @@ func toIncomingMessage(ctx context.Context, msg *callbackMessage) *im.IncomingMe
 	param, err := parseMessageParam(msg.MsgParam)
 	if err != nil {
 		logger.Warnf(ctx, "[Yunzhijia] Failed to parse msgParam: msgId=%s err=%v", msg.MsgID, err)
+	}
+	if param != nil {
+		// Keep topic diagnostics to identifiers only: they are sufficient to
+		// validate reply-root stability without recording user message content.
+		logger.Infof(ctx, "[Yunzhijia] Thread callback: msg_id=%s reply_msg_id=%s reply_root_msg_id=%s",
+			msg.MsgID, param.ReplyMsgID, param.ReplyRootMsgID)
 	}
 	image, hasImage := param.firstImage()
 
@@ -202,6 +221,7 @@ func toIncomingMessage(ctx context.Context, msg *callbackMessage) *im.IncomingMe
 		ChatType:    chatType,
 		Content:     content,
 		MessageID:   msg.MsgID,
+		ThreadID:    threadIDForMessage(msg.MsgID, param),
 		Extra: map[string]string{
 			"robot_id":      msg.RobotID,
 			"robot_name":    msg.RobotName,
@@ -219,6 +239,16 @@ func toIncomingMessage(ctx context.Context, msg *callbackMessage) *im.IncomingMe
 		incoming.Extra["yunzhijia_image_height"] = fmt.Sprintf("%d", image.Height)
 	}
 	return incoming
+}
+
+// threadIDForMessage returns the message-thread identifier received from
+// Yunzhijia. A top-level message starts a new thread with its own msgId;
+// replies carry replyRootMsgId (normally the bot message at the thread root).
+func threadIDForMessage(messageID string, param *messageParam) string {
+	if param != nil && param.ReplyRootMsgID != "" {
+		return param.ReplyRootMsgID
+	}
+	return messageID
 }
 
 func firstNonEmpty(values ...string) string {
@@ -298,12 +328,18 @@ func (a *Adapter) SendReply(ctx context.Context, incoming *im.IncomingMessage, r
 	}
 	if reply.Extra != nil {
 		if formatType, ok := reply.Extra["yunzhijia_format_type"]; ok {
-			if formatType == "" {
-				payload.Param = nil
-			} else {
-				payload.Param = &sendMessageParam{FormatType: formatType}
-			}
+			payload.Param.FormatType = formatType
 		}
+	}
+	if incoming.MessageID != "" {
+		payload.ParamType = 3
+		payload.Param.ReplyMsgID = incoming.MessageID
+		payload.Param.IsReference = true
+		payload.Param.ReplySummary = incoming.Content
+		payload.Param.ReplyPersonName = incoming.UserName
+	} else if payload.Param.FormatType == "" {
+		// Keep the prior opt-out behaviour for non-reference replies.
+		payload.Param = nil
 	}
 
 	// When groupType == 3, don't set notifyParams (per reference implementation).
@@ -383,11 +419,73 @@ func (a *Adapter) DownloadFile(ctx context.Context, msg *im.IncomingMessage) (io
 	return newLimitedReadCloser(resp.Body, maxDownloadFileSize), fileName, nil
 }
 
-// fetchDownload performs the download request, following at most maxDownloadRedirects
-// redirects. Each redirect target is re-validated against the allowed host suffix so
-// the request cannot be redirected off the trusted domain. The bearer token is only
-// sent on the initial request and never forwarded across a redirect.
+// Attachment downloads use the existing configured HTTP timeout.
+// Retry once on timeout, with a 500ms delay.
+// The parent IM attachment deadline still limits the total duration.
 func (a *Adapter) fetchDownload(ctx context.Context, downloadURL, accessToken string) (*http.Response, error) {
+	downloadClient := *a.httpClient
+
+	var lastErr error
+	for attempt := 0; attempt < attachmentDownloadAttempts; attempt++ {
+		attemptCtx, cancel := context.WithTimeout(ctx, downloadClient.Timeout)
+		resp, err := a.fetchDownloadOnce(attemptCtx, &downloadClient, downloadURL, accessToken)
+		if err == nil {
+			if resp.StatusCode != http.StatusOK {
+				body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+				_ = resp.Body.Close()
+				cancel()
+				resp.Body = io.NopCloser(bytes.NewReader(body))
+				return resp, nil
+			}
+
+			body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxDownloadFileSize+1))
+			_ = resp.Body.Close()
+			cancel()
+			if readErr == nil {
+				if len(body) > maxDownloadFileSize {
+					return nil, fmt.Errorf("yunzhijia file exceeds max download size of %d bytes", maxDownloadFileSize)
+				}
+				resp.Body = io.NopCloser(bytes.NewReader(body))
+				return resp, nil
+			}
+			err = fmt.Errorf("read download file body: %w", readErr)
+		} else {
+			cancel()
+		}
+
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		lastErr = err
+		if !isDownloadTimeout(err) || attempt == attachmentDownloadAttempts-1 {
+			break
+		}
+		timer := time.NewTimer(attachmentRetryDelay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return nil, lastErr
+}
+
+func isDownloadTimeout(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
+// fetchDownloadOnce follows at most maxDownloadRedirects redirects. Each target
+// is re-validated, and the bearer token is only sent on the initial request.
+func (a *Adapter) fetchDownloadOnce(
+	ctx context.Context,
+	client *http.Client,
+	downloadURL, accessToken string,
+) (*http.Response, error) {
 	currentURL := downloadURL
 	for redirects := 0; ; redirects++ {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, currentURL, nil)
@@ -397,7 +495,7 @@ func (a *Adapter) fetchDownload(ctx context.Context, downloadURL, accessToken st
 		if redirects == 0 {
 			req.Header.Set("Authorization", "Bearer "+accessToken)
 		}
-		resp, err := a.httpClient.Do(req)
+		resp, err := client.Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("download file: %w", err)
 		}

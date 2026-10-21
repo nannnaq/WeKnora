@@ -1,9 +1,13 @@
 package embedding
 
 import (
+	"net/http"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Tencent/WeKnora/internal/types"
+	secutils "github.com/Tencent/WeKnora/internal/utils"
 )
 
 func TestNewEmbeddingHTTPClient_ReusesTransport(t *testing.T) {
@@ -15,10 +19,18 @@ func TestNewEmbeddingHTTPClient_ReusesTransport(t *testing.T) {
 	if first == second {
 		t.Fatal("expected distinct HTTP clients")
 	}
-	if first.Transport != second.Transport {
-		t.Fatal("expected embedding HTTP clients to share a transport")
+	firstGuard, ok := first.Transport.(*secutils.SSRFValidatingRoundTripper)
+	if !ok {
+		t.Fatalf("expected SSRF-validating transport, got %T", first.Transport)
 	}
-	if first.Transport != sharedEmbeddingHTTPTransport {
+	secondGuard, ok := second.Transport.(*secutils.SSRFValidatingRoundTripper)
+	if !ok {
+		t.Fatalf("expected SSRF-validating transport, got %T", second.Transport)
+	}
+	if firstGuard.Base != secondGuard.Base {
+		t.Fatal("expected embedding HTTP clients to share a base transport")
+	}
+	if firstGuard.Base != http.RoundTripper(sharedEmbeddingHTTPTransport) {
 		t.Fatal("expected embedding HTTP client to use the shared transport")
 	}
 	if first.Timeout != firstTimeout {
@@ -45,16 +57,14 @@ func TestValidateEmbeddingBaseURL_AllowsEmpty(t *testing.T) {
 	}
 }
 
-func TestNewOpenAIEmbedder_RejectsPrivateBaseURL(t *testing.T) {
-	_, err := NewOpenAIEmbedder(
-		"test-key",
-		"http://169.254.169.254/latest/meta-data",
-		"text-embedding-3-small",
-		511,
-		256,
-		"model-id",
-		nil,
-	)
+func TestNewEmbedder_RejectsPrivateBaseURL(t *testing.T) {
+	_, err := NewEmbedder(Config{
+		Source:    types.ModelSourceRemote,
+		Provider:  "openai",
+		BaseURL:   "http://169.254.169.254/latest/meta-data",
+		ModelName: "text-embedding-3-small",
+		APIKey:    "test-key",
+	}, nil, nil)
 	if err == nil {
 		t.Fatal("expected SSRF rejection for link-local metadata URL")
 	}

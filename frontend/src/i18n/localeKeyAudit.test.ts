@@ -51,6 +51,21 @@ test('critical runtime i18n trees are present', () => {
   assert.deepEqual(missing, [], missing.join('\n'))
 })
 
+test('operation labels remain referenced when pruning locale bundles', () => {
+  const keys = [...localeKeysByName[REFERENCE_LOCALE]].filter((key) => key.startsWith('agentStream.operations.names.'))
+  assert.ok(keys.length > 0)
+  assert.deepEqual(keys.filter((key) => !referencedKeys.has(key)), [])
+})
+
+test('installer command progress messages resolve in the settings namespace', () => {
+  for (const [locale, bundle] of Object.entries(LOCALE_BUNDLES)) {
+    for (const name of ['installCommandRunning', 'installCommandWaiting']) {
+      const key = `settings.sandbox.${name}`
+      assert.equal(typeof getLocaleValueAtPath(bundle, key), 'string', `${locale}: missing ${key}`)
+    }
+  }
+})
+
 test('referenced i18n keys used in app code exist in every locale', () => {
   const failures = findUsedKeysMissingInLocales(referencedKeys, localeKeysByName)
   assert.deepEqual(failures, [], failures.slice(0, 20).join('\n'))
@@ -66,6 +81,51 @@ const PARSER_ENGINE_NAMES = [
   'weknoracloud',
   'markitdown',
   'opendataloader',
+] as const
+
+/** Worker pools / queues use dynamic te() paths in RuntimeQueues.vue; keep in sync with internal/types/task.go. */
+const RUNTIME_WORKER_POOL_NAMES = [
+  'core',
+  'postprocess',
+  'enrichment',
+  'maintenance',
+  'shared',
+  'wiki',
+] as const
+
+const RUNTIME_QUEUE_NAMES = [
+  'default',
+  'chat_attachment',
+  'postprocess',
+  'summary',
+  'sync',
+  'low',
+  'multimodal',
+  'graph',
+  'question',
+  'wiki',
+] as const
+
+const RUNTIME_TASK_TYPE_KEYS = [
+  'documentProcess',
+  'manualProcess',
+  'temporaryDocumentProcess',
+  'postProcess',
+  'summary',
+  'tableSummary',
+  'question',
+  'multimodal',
+  'graph',
+  'sync',
+  'faqImport',
+  'batchReparse',
+  'batchDelete',
+  'move',
+  'indexDelete',
+  'kbClone',
+  'kbDelete',
+  'wikiIngest',
+  'wikiFinalize',
 ] as const
 
 test('registered audit action labels exist as flat keys in every locale', () => {
@@ -151,7 +211,9 @@ test('prune rebuild restores registered audit keys from baked-in English default
   const emptyBundles = {
     'en-US': {},
     'zh-CN': {},
+    'zh-TW': {},
     'ko-KR': {},
+    'ja-JP': {},
     'ru-RU': {},
   } as Record<LocaleName, Record<string, unknown>>
   const rebuilt = rebuildPrunedLocales(emptyBundles, usage)
@@ -178,6 +240,42 @@ test('prune rebuild restores registered audit keys from baked-in English default
   )
 })
 
+test('runtime queue worker pool and queue labels exist in every locale', () => {
+  const failures: string[] = []
+
+  for (const pool of RUNTIME_WORKER_POOL_NAMES) {
+    for (const [localeName, keys] of Object.entries(localeKeysByName) as Array<[LocaleName, Set<string>]>) {
+      if (!keys.has(`system.globalSettings.runtime.pools.${pool}`)) {
+        failures.push(`${localeName}: missing system.globalSettings.runtime.pools.${pool}`)
+      }
+      if (!keys.has(`system.globalSettings.runtime.poolDescriptions.${pool}`)) {
+        failures.push(`${localeName}: missing system.globalSettings.runtime.poolDescriptions.${pool}`)
+      }
+    }
+  }
+
+  for (const queue of RUNTIME_QUEUE_NAMES) {
+    for (const [localeName, keys] of Object.entries(localeKeysByName) as Array<[LocaleName, Set<string>]>) {
+      if (!keys.has(`system.globalSettings.runtime.queueNames.${queue}`)) {
+        failures.push(`${localeName}: missing system.globalSettings.runtime.queueNames.${queue}`)
+      }
+      if (!keys.has(`system.globalSettings.runtime.queueDescriptions.${queue}`)) {
+        failures.push(`${localeName}: missing system.globalSettings.runtime.queueDescriptions.${queue}`)
+      }
+    }
+  }
+
+  for (const taskType of RUNTIME_TASK_TYPE_KEYS) {
+    for (const [localeName, keys] of Object.entries(localeKeysByName) as Array<[LocaleName, Set<string>]>) {
+      if (!keys.has(`system.globalSettings.runtime.tasks.taskTypes.${taskType}`)) {
+        failures.push(`${localeName}: missing system.globalSettings.runtime.tasks.taskTypes.${taskType}`)
+      }
+    }
+  }
+
+  assert.deepEqual(failures, [], failures.slice(0, 20).join('\n'))
+})
+
 test('parser engine display keys exist in every locale', () => {
   const failures: string[] = []
 
@@ -199,4 +297,42 @@ test('locale messages compile with vue-i18n syntax rules', () => {
     (failure) => `${failure.path}: ${failure.message}\n  ${failure.value}`,
   )
   assert.deepEqual(summary, [], summary.slice(0, 20).join('\n'))
+})
+
+test('Seafile picker texts and sync error codes remain localized after pruning', () => {
+  const seafileErrors = [
+    'permission_denied', 'not_found', 'file_too_large', 'empty_file',
+    'source_changed', 'invalid_response', 'ssrf_blocked', 'fetch_failed',
+  ]
+  const keys = [
+    'connector.seafile', 'connectorDesc.seafile',
+    'seafile.baseUrl', 'seafile.apiToken', 'seafile.apiTokenHint',
+    'seafile.singleLibraryOnly', 'seafile.selectionRequired',
+    'resourceType.library', 'noResourcesDesc_seafile',
+    ...[1, 2, 3].map(step => `guideStep${step}_seafile`),
+    ...seafileErrors.map(code => `syncError.seafile_${code}`),
+  ].map(key => `datasource.${key}`)
+  keys.push('knowledgeBase.channelSeafile')
+  for (const key of keys) {
+    assert.ok(referencedKeys.has(key), `pruning would remove ${key}`)
+    for (const [locale, bundle] of Object.entries(LOCALE_BUNDLES)) {
+      assert.equal(typeof getLocaleValueAtPath(bundle, key), 'string', `${locale}: missing ${key}`)
+    }
+  }
+})
+
+test('DingTalk configuration and sync failures remain localized after pruning', () => {
+  const keys = [
+    'connector.dingtalk', 'connectorDesc.dingtalk',
+    'field.clientId', 'field.clientSecret', 'field.operatorId', 'field.operatorIdHint',
+    'prereqBarText_dingtalk', 'prereqOpenConsole_dingtalk',
+    ...[1, 2, 3].flatMap(step => [`prereqStep${step}Brief_dingtalk`, `prereqStep${step}Desc_dingtalk`]),
+    'syncError.dingtalk_document_failed', 'syncError.dingtalk_resource_failed',
+  ].map(key => `datasource.${key}`)
+  for (const key of keys) {
+    assert.ok(referencedKeys.has(key), `pruning would remove ${key}`)
+    for (const [locale, bundle] of Object.entries(LOCALE_BUNDLES)) {
+      assert.equal(typeof getLocaleValueAtPath(bundle, key), 'string', `${locale}: missing ${key}`)
+    }
+  }
 })

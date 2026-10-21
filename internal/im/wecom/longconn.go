@@ -22,6 +22,7 @@ import (
 
 	"github.com/Tencent/WeKnora/internal/im"
 	"github.com/Tencent/WeKnora/internal/logger"
+	secutils "github.com/Tencent/WeKnora/internal/utils"
 	ws "github.com/gorilla/websocket"
 )
 
@@ -217,12 +218,7 @@ func (c *LongConnClient) Start(ctx context.Context) error {
 // Stop gracefully closes the connection.
 func (c *LongConnClient) Stop() {
 	c.closed.Store(true)
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.conn != nil {
-		_ = c.conn.Close()
-		c.conn = nil
-	}
+	c.closeConn()
 }
 
 // SendReply sends a text reply through the WebSocket connection.
@@ -370,7 +366,9 @@ func (c *LongConnClient) sendStreamFrame(incoming *im.IncomingMessage, streamID,
 }
 
 func (c *LongConnClient) connectAndRun(ctx context.Context) error {
-	conn, _, err := ws.DefaultDialer.DialContext(ctx, c.endpoint, nil)
+	dialer := *ws.DefaultDialer
+	dialer.NetDialContext = secutils.SSRFSafeDialContext
+	conn, _, err := dialer.DialContext(ctx, c.endpoint, nil)
 	if err != nil {
 		return fmt.Errorf("dial: %w", err)
 	}
@@ -380,16 +378,20 @@ func (c *LongConnClient) connectAndRun(ctx context.Context) error {
 	c.mu.Unlock()
 
 	defer func() {
-		c.mu.Lock()
-		c.conn = nil
-		c.mu.Unlock()
-		_ = conn.Close()
+		c.closeConnIf(conn)
 		// NOTE: streamBufs is intentionally NOT cleared on reconnect.
 		// Active streams survive reconnections — the WeCom replace-based
 		// protocol means the next UpdateStreamContent will resend the full
 		// accumulated content on the new connection. EndStream always
 		// cleans up the buffer, so there is no memory leak.
 	}()
+
+	// A Stop() that lands between the dial and the assignment above finds no
+	// connection to close, so re-check here to avoid running a receive loop
+	// that nobody will tear down until the read deadline expires.
+	if c.closed.Load() {
+		return fmt.Errorf("client stopped")
+	}
 
 	// Authenticate
 	if err := c.authenticate(ctx); err != nil {
@@ -401,7 +403,7 @@ func (c *LongConnClient) connectAndRun(ctx context.Context) error {
 	// Start heartbeat
 	heartbeatCtx, heartbeatCancel := context.WithCancel(ctx)
 	defer heartbeatCancel()
-	go c.heartbeatLoop(heartbeatCtx)
+	go c.heartbeatLoop(heartbeatCtx, conn)
 
 	// Message receive loop with read deadline.
 	// The deadline is reset on every successful read; if no message arrives
@@ -423,7 +425,7 @@ func (c *LongConnClient) connectAndRun(ctx context.Context) error {
 		switch frame.Cmd {
 		case cmdMsgCallback, cmdEventCallback:
 			// Detach from connection ctx so in-flight messages survive reconnects.
-			go c.handleCallback(context.WithoutCancel(ctx), frame)
+			go c.handleCallback(context.WithoutCancel(ctx), conn, frame)
 		default:
 			// pong or other control frames — ignore
 		}
@@ -474,7 +476,7 @@ func (c *LongConnClient) authenticate(ctx context.Context) error {
 	return nil
 }
 
-func (c *LongConnClient) heartbeatLoop(ctx context.Context) {
+func (c *LongConnClient) heartbeatLoop(ctx context.Context, conn *ws.Conn) {
 	ticker := time.NewTicker(defaultHeartbeatInterval)
 	defer ticker.Stop()
 
@@ -490,14 +492,14 @@ func (c *LongConnClient) heartbeatLoop(ctx context.Context) {
 			}
 			if err := c.writeJSON(frame); err != nil {
 				logger.Warnf(ctx, "[WeCom] Heartbeat failed: %v, closing connection to trigger reconnect", err)
-				c.closeConn()
+				c.closeConnIf(conn)
 				return
 			}
 		}
 	}
 }
 
-func (c *LongConnClient) handleCallback(ctx context.Context, frame wsFrame) {
+func (c *LongConnClient) handleCallback(ctx context.Context, conn *ws.Conn, frame wsFrame) {
 	// Log raw message body for debugging
 	logger.Debugf(ctx, "[WeCom] Raw callback body: %s", string(frame.Body))
 
@@ -516,7 +518,7 @@ func (c *LongConnClient) handleCallback(ctx context.Context, frame wsFrame) {
 		switch msg.Event.EventType {
 		case "disconnected_event":
 			logger.Warnf(ctx, "[WeCom] Server sent disconnected_event, closing connection to trigger reconnect")
-			c.closeConn()
+			c.closeConnIf(conn)
 		default:
 			logger.Infof(ctx, "[WeCom] Ignoring event type: %s", msg.Event.EventType)
 		}
@@ -644,7 +646,11 @@ func (c *LongConnClient) handleCallback(ctx context.Context, frame wsFrame) {
 }
 
 // convertMixedMessage converts a WeCom mixed (text+image) message.
-// Extracts all text content for QA; if there's only images, treat as image message.
+// When the message contains both text and images, the first image is kept as
+// the QA attachment and the text is preserved as its caption — the IM service
+// treats a captioned image exactly like a standalone image message, so the
+// model sees the image and the user's question together. Text-only and
+// image-only messages keep their previous behavior.
 func (c *LongConnClient) convertMixedMessage(msg *botMessage, chatID string, chatType im.ChatType, reqID string) *im.IncomingMessage {
 	isGroup := chatType == im.ChatTypeGroup
 	var textParts []string
@@ -669,7 +675,30 @@ func (c *LongConnClient) convertMixedMessage(msg *botMessage, chatID string, cha
 		}
 	}
 
-	// If there's text content, treat as text message (QA query)
+	// Text plus image(s): image as attachment, text as caption. Downstream,
+	// prepareIMAttachments downloads the image and fileMessageQAContent keeps
+	// msg.Content as the query, so dropping the image here would silently
+	// blind the model for the most common mixed-message shape ("这是什么？" + screenshot).
+	if firstImageURL != "" {
+		incoming := &im.IncomingMessage{
+			Platform:    im.PlatformWeCom,
+			MessageType: im.MessageTypeImage,
+			UserID:      msg.From.UserID,
+			UserName:    msg.From.UserID,
+			ChatID:      chatID,
+			ChatType:    chatType,
+			MessageID:   msg.MsgID,
+			FileKey:     firstImageURL,
+			FileName:    msg.MsgID + ".png",
+			Extra:       map[string]string{"req_id": reqID, "aes_key": firstImageAESKey},
+		}
+		if len(textParts) > 0 {
+			incoming.Content = strings.Join(textParts, "\n")
+		}
+		return incoming
+	}
+
+	// Text only, treat as text message (QA query)
 	if len(textParts) > 0 {
 		return &im.IncomingMessage{
 			Platform:    im.PlatformWeCom,
@@ -684,32 +713,44 @@ func (c *LongConnClient) convertMixedMessage(msg *botMessage, chatID string, cha
 		}
 	}
 
-	// Only images, treat as image message (save to KB)
-	if firstImageURL != "" {
-		return &im.IncomingMessage{
-			Platform:    im.PlatformWeCom,
-			MessageType: im.MessageTypeImage,
-			UserID:      msg.From.UserID,
-			UserName:    msg.From.UserID,
-			ChatID:      chatID,
-			ChatType:    chatType,
-			MessageID:   msg.MsgID,
-			FileKey:     firstImageURL,
-			FileName:    msg.MsgID + ".png",
-			Extra:       map[string]string{"req_id": reqID, "aes_key": firstImageAESKey},
-		}
-	}
-
 	return nil
 }
 
-// closeConn forcibly closes the underlying WebSocket, which unblocks any
-// pending ReadMessage call in the receive loop and triggers a reconnection.
+// closeConn forcibly closes the active WebSocket, which unblocks any pending
+// ReadMessage call in the receive loop and triggers a reconnection.
+//
+// c.mu is released before Close because closing a TLS connection writes a
+// close_notify alert and can block for seconds on a stalled peer. Holding c.mu
+// across that write stalls Stop(), and the IM service tears channels down while
+// holding its own channel-map lock, so the delay spreads to every other channel
+// operation in the process.
 func (c *LongConnClient) closeConn() {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.conn != nil {
-		_ = c.conn.Close()
+	conn := c.conn
+	c.conn = nil
+	c.mu.Unlock()
+	if conn != nil {
+		_ = conn.Close()
+	}
+}
+
+// closeConnIf closes conn only while it is still the active connection.
+// Callers bound to a single connection generation — the heartbeat loop and the
+// detached callback handlers — must use this instead of closeConn: their
+// goroutines can outlive the connection that spawned them, and an unconditional
+// close would tear down a healthy connection opened by a later reconnect.
+func (c *LongConnClient) closeConnIf(conn *ws.Conn) {
+	if conn == nil {
+		return
+	}
+	c.mu.Lock()
+	active := c.conn == conn
+	if active {
+		c.conn = nil
+	}
+	c.mu.Unlock()
+	if active {
+		_ = conn.Close()
 	}
 }
 

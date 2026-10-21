@@ -15,11 +15,17 @@ import (
 
 	"github.com/Tencent/WeKnora/internal/models/utils"
 	"github.com/Tencent/WeKnora/internal/types"
+	secutils "github.com/Tencent/WeKnora/internal/utils"
 	"github.com/google/uuid"
 )
 
 const (
 	weKnoraCloudReaderBaseURL = "https://weknora.weixin.qq.com/api/v1/doc"
+	// defaultWeKnoraCloudPollTimeout bounds how long one async task is polled;
+	// WEKNORA_WEKNORACLOUD_TIMEOUT overrides it. It must stay below
+	// WEKNORA_DOCREADER_CALL_TIMEOUT (default 30m) or the hardcoded value, not
+	// the configured one, is what fails a slow parse.
+	defaultWeKnoraCloudPollTimeout = 20 * time.Minute
 )
 
 // WeKnoraCloudSignedDocumentReader implements the docreader HTTP protocol with WeKnoraCloud signing.
@@ -39,20 +45,15 @@ func NewWeKnoraCloudSignedDocumentReader(appID, apiKey string) (*WeKnoraCloudSig
 	if apiKey == "" {
 		return nil, fmt.Errorf("WeKnoraCloud apiKey is required")
 	}
+	clientCfg := secutils.DefaultSSRFSafeHTTPClientConfig()
+	clientCfg.Timeout = 500 * time.Minute
 	return &WeKnoraCloudSignedDocumentReader{
 		appID:               appID,
 		apiKey:              apiKey,
 		initialPollInterval: 500 * time.Millisecond,
 		maxPollInterval:     10 * time.Second,
-		pollTimeout:         20 * time.Minute,
-		client: &http.Client{
-			Timeout: 500 * time.Minute,
-			Transport: &http.Transport{
-				MaxIdleConns:        10,
-				IdleConnTimeout:     90 * time.Second,
-				MaxIdleConnsPerHost: 5,
-			},
-		},
+		pollTimeout:         requestTimeoutFromEnv("WEKNORA_WEKNORACLOUD_TIMEOUT", defaultWeKnoraCloudPollTimeout),
+		client:              secutils.NewSSRFSafeHTTPClient(clientCfg),
 	}, nil
 }
 
@@ -142,7 +143,7 @@ type weKnoraCloudAsyncTaskResponse struct {
 
 func (p *WeKnoraCloudSignedDocumentReader) pollTaskResult(ctx context.Context, taskID string) (*types.ReadResult, error) {
 	pollCtx := ctx
-	if _, ok := ctx.Deadline(); !ok && p.pollTimeout > 0 {
+	if p.pollTimeout > 0 {
 		var cancel context.CancelFunc
 		pollCtx, cancel = context.WithTimeout(ctx, p.pollTimeout)
 		defer cancel()

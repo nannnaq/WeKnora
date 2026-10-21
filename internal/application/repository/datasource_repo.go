@@ -25,10 +25,22 @@ func (r *DataSourceRepository) Create(ctx context.Context, ds *types.DataSource)
 	if ds == nil {
 		return errors.New("data source is nil")
 	}
-	if err := r.db.WithContext(ctx).Create(ds).Error; err != nil {
-		return err
-	}
-	return nil
+	// GORM treats false as the zero value of bool. For a field tagged
+	// default:true it replaces both the INSERT value and the in-memory field
+	// with true, so a caller-selected false would be lost. Capture it, force
+	// the column write, then restore the struct so Create's return value (and
+	// the HTTP 201 body) match the database.
+	syncDeletions := ds.SyncDeletions
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(ds).Error; err != nil {
+			return err
+		}
+		return tx.Model(&types.DataSource{}).
+			Where("id = ?", ds.ID).
+			UpdateColumn("sync_deletions", syncDeletions).Error
+	})
+	ds.SyncDeletions = syncDeletions
+	return err
 }
 
 // FindByID retrieves a data source by ID
@@ -73,12 +85,19 @@ func (r *DataSourceRepository) Update(ctx context.Context, ds *types.DataSource)
 	if ds.ID == "" {
 		return errors.New("data source id is empty")
 	}
-	if err := r.db.WithContext(ctx).
-		Model(ds).
-		Updates(ds).Error; err != nil {
-		return err
-	}
-	return nil
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(ds).Updates(ds).Error; err != nil {
+			return err
+		}
+		// GORM Updates(struct) deliberately skips zero values, which would make
+		// a user-selected sync_deletions=false or manual-only schedule impossible to persist.
+		return tx.Model(&types.DataSource{}).
+			Where("id = ?", ds.ID).
+			UpdateColumns(map[string]interface{}{
+				"sync_deletions": ds.SyncDeletions,
+				"sync_schedule":  ds.SyncSchedule,
+			}).Error
+	})
 }
 
 // UpdateSyncState updates only fields managed by sync execution. GORM's
@@ -303,6 +322,45 @@ func (r *SyncLogRepository) CleanupOldLogs(ctx context.Context, retentionDays in
 		Where("started_at < NOW() - INTERVAL ? DAY", retentionDays).
 		Delete(&types.SyncLog{}).Error; err != nil {
 		return err
+	}
+	return nil
+}
+
+// PatchSyncSettings never writes runtime state or fields omitted by the request.
+func (r *DataSourceRepository) PatchSyncSettings(
+	ctx context.Context, ds *types.DataSource, expectedConfig types.JSON, fields []string,
+) error {
+	if ds == nil || ds.ID == "" || ds.TenantID == 0 || len(fields) == 0 {
+		return errors.New("data source identity and settings are required")
+	}
+	values := map[string]any{}
+	query := r.db.WithContext(ctx).Model(&types.DataSource{}).
+		Where("id = ? AND tenant_id = ?", ds.ID, ds.TenantID)
+	for _, field := range fields {
+		switch field {
+		case "sync_schedule":
+			values[field] = ds.SyncSchedule
+		case "sync_mode":
+			values[field] = ds.SyncMode
+		case "conflict_strategy":
+			values[field] = ds.ConflictStrategy
+		case "sync_deletions":
+			values[field] = ds.SyncDeletions
+		case "config":
+			values[field] = ds.Config
+			// Config includes credentials and connector settings. Refuse to replace
+			// them if another request changed them while selection was being edited.
+			query = query.Where("config = ?", expectedConfig)
+		default:
+			return errors.New("unsupported sync setting")
+		}
+	}
+	result := query.Updates(values)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return types.ErrDataSourceSettingsConflict
 	}
 	return nil
 }

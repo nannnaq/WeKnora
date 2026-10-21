@@ -5,14 +5,17 @@ import subprocess
 import tempfile
 import unittest
 import zipfile
+from unittest.mock import patch
 
 import openpyxl
 import pandas as pd
+from openpyxl.chart import BarChart, Reference
 
 from docreader.parser.excel_convert import detect_excel_format, engine_for_format
 from docreader.parser.excel_parser import ExcelParser
+from docreader.parser.markitdown_parser import StdMarkitdownParser
 from docreader.parser.xlsx_merge import fill_merged_cells_xlsx
-from docreader.parser.xlsx_repair import repair_xlsx_bytes
+from docreader.parser.xlsx_repair import repair_xlsx_bytes, strip_unreadable_ranges_xlsx
 
 
 def _xlsx_with_phantom_shared_strings() -> bytes:
@@ -48,6 +51,37 @@ def _xlsx_with_phantom_shared_strings() -> bytes:
                     zout.write(path, arc)
         return out.getvalue()
 
+
+
+def _xlsx_with_sheet_fragment(fragment: str) -> bytes:
+    """A two-row workbook with ``fragment`` spliced into sheet1 before pageMargins,
+    which is where OOXML puts data validations and scenarios."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws["A1"], ws["B1"] = "name", "qty"
+    ws["A2"], ws["B2"] = "apple", 3
+    bio = io.BytesIO()
+    wb.save(bio)
+
+    out = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(bio.getvalue()), "r") as zin, zipfile.ZipFile(
+        out, "w", zipfile.ZIP_DEFLATED
+    ) as zout:
+        for info in zin.infolist():
+            data = zin.read(info.filename)
+            if info.filename == "xl/worksheets/sheet1.xml":
+                sheet = data.decode("utf-8")
+                at = sheet.index("<pageMargins")
+                data = (sheet[:at] + fragment + sheet[at:]).encode("utf-8")
+            zout.writestr(info, data)
+    return out.getvalue()
+
+
+def _validation(sqref: str, formula: str = '"a,b"') -> str:
+    return (
+        f'<dataValidation type="list" allowBlank="1" sqref="{sqref}">'
+        f"<formula1>{formula}</formula1></dataValidation>"
+    )
 
 class ExcelFormatDetectionTest(unittest.TestCase):
     def test_detect_xlsx_and_engine(self):
@@ -98,6 +132,83 @@ class ExcelFormatDetectionTest(unittest.TestCase):
         self.assertIn("legacy", document.content)
 
 
+
+class XlsxUnreadableRangesTest(unittest.TestCase):
+    """#3599: a range openpyxl cannot parse must not cost the whole document."""
+
+    def test_whole_column_validation_aborts_openpyxl_without_the_fix(self):
+        broken = _xlsx_with_sheet_fragment(
+            f'<dataValidations count="1">{_validation("C:C")}</dataValidations>'
+        )
+        with self.assertRaisesRegex(TypeError, "MultiCellRange"):
+            openpyxl.load_workbook(io.BytesIO(broken), data_only=True)
+        with self.assertRaisesRegex(TypeError, "MultiCellRange"):
+            pd.read_excel(io.BytesIO(broken), engine="openpyxl")
+
+    def test_drops_each_range_spelling_openpyxl_rejects(self):
+        # Measured on openpyxl 3.1.5; every one of these raised the reported
+        # TypeError before the fix.
+        for sqref in ("C:C", "1:1", "A1:B2,C3", "#REF!", "A1:XFD1048577"):
+            with self.subTest(sqref=sqref):
+                broken = _xlsx_with_sheet_fragment(
+                    f'<dataValidations count="1">{_validation(sqref)}</dataValidations>'
+                )
+                fixed = strip_unreadable_ranges_xlsx(broken)
+                self.assertIsNotNone(fixed)
+                df = pd.read_excel(io.BytesIO(fixed), header=None, engine="openpyxl")
+                self.assertEqual(df.values.tolist(), [["name", "qty"], ["apple", 3]])
+
+    def test_drops_a_scenario_list_with_an_unreadable_range(self):
+        broken = _xlsx_with_sheet_fragment(
+            # The range belongs to the list, not to each scenario.
+            '<scenarios sqref="A:A"><scenario name="s" count="1">'
+            '<inputCells r="A1" val="1"/></scenario></scenarios>'
+        )
+        with self.assertRaisesRegex(TypeError, "MultiCellRange"):
+            openpyxl.load_workbook(io.BytesIO(broken), data_only=True)
+        fixed = strip_unreadable_ranges_xlsx(broken)
+        self.assertIsNotNone(fixed)
+        openpyxl.load_workbook(io.BytesIO(fixed), data_only=True)
+
+    def test_keeps_a_readable_validation_next_to_an_unreadable_one(self):
+        broken = _xlsx_with_sheet_fragment(
+            '<dataValidations count="2">'
+            f'{_validation("C:C")}{_validation("D2:D10", chr(34) + "keep" + chr(34))}'
+            "</dataValidations>"
+        )
+        fixed = strip_unreadable_ranges_xlsx(broken)
+        self.assertIsNotNone(fixed)
+        ws = openpyxl.load_workbook(io.BytesIO(fixed)).active
+        self.assertEqual(
+            [str(dv.sqref) for dv in ws.data_validations.dataValidation], ["D2:D10"]
+        )
+
+    def test_leaves_a_readable_workbook_untouched(self):
+        fine = _xlsx_with_sheet_fragment(
+            f'<dataValidations count="1">{_validation("C2:C10")}</dataValidations>'
+        )
+        self.assertIsNone(strip_unreadable_ranges_xlsx(fine))
+        self.assertIsNone(strip_unreadable_ranges_xlsx(b"not a zip"))
+
+    def test_excel_parser_reads_a_workbook_with_a_whole_column_validation(self):
+        broken = _xlsx_with_sheet_fragment(
+            f'<dataValidations count="1">{_validation("C:C")}</dataValidations>'
+        )
+        document = ExcelParser(file_name="feishu.xlsx", file_type="xlsx").parse_into_text(
+            broken
+        )
+        self.assertIn("apple", document.content)
+
+    def test_markitdown_parser_reads_a_workbook_with_a_whole_column_validation(self):
+        broken = _xlsx_with_sheet_fragment(
+            f'<dataValidations count="1">{_validation("C:C")}</dataValidations>'
+        )
+        document = StdMarkitdownParser(
+            file_name="feishu.xlsx", file_type="xlsx"
+        ).parse_into_text(broken)
+        self.assertIn("apple", document.content)
+
+
 class XlsxRepairTest(unittest.TestCase):
     def test_repair_removes_phantom_shared_strings_reference(self):
         broken = _xlsx_with_phantom_shared_strings()
@@ -136,6 +247,28 @@ class XlsxRepairTest(unittest.TestCase):
 
 
 class XlsxMergeFillTest(unittest.TestCase):
+    @staticmethod
+    def _workbook_with_merged_cells_and_chart() -> bytes:
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws["A1"] = "title"
+        ws.merge_cells("A1:B1")
+        ws.append(["category", "value"])
+        ws.append(["one", 1])
+        ws.append(["two", 2])
+
+        chart = BarChart()
+        chart.add_data(
+            Reference(ws, min_col=2, min_row=2, max_row=4),
+            titles_from_data=True,
+        )
+        chart.set_categories(Reference(ws, min_col=1, min_row=3, max_row=4))
+        ws.add_chart(chart, "D2")
+
+        bio = io.BytesIO()
+        wb.save(bio)
+        return bio.getvalue()
+
     def test_fill_merged_cells_propagates_master_value(self):
         wb = openpyxl.Workbook()
         ws = wb.active
@@ -154,6 +287,89 @@ class XlsxMergeFillTest(unittest.TestCase):
         self.assertEqual(out_ws["B1"].value, "title")
         self.assertEqual(out_ws["A3"].value, "left")
         self.assertEqual(out_ws["B3"].value, "only-b")
+
+    def test_fill_merged_cells_does_not_serialize_charts(self):
+        content = self._workbook_with_merged_cells_and_chart()
+
+        with patch(
+            "openpyxl.chart._chart.ChartBase._write",
+            side_effect=AttributeError("'Typed' object has no attribute 'to_tree'"),
+        ):
+            filled = fill_merged_cells_xlsx(content)
+
+        out_wb = openpyxl.load_workbook(io.BytesIO(filled), data_only=True)
+        out_ws = out_wb.active
+        self.assertEqual(out_ws["B1"].value, "title")
+        self.assertEqual(out_ws["A3"].value, "one")
+        self.assertEqual(out_ws["B4"].value, 2)
+        self.assertEqual(out_ws._charts, [])
+
+    def test_excel_parser_reads_merged_workbook_with_chart(self):
+        document = ExcelParser().parse_into_text(
+            self._workbook_with_merged_cells_and_chart()
+        )
+
+        self.assertIn("A: title,B: title", document.content)
+        self.assertIn("A: one,B: 1", document.content)
+        self.assertIn("A: two,B: 2", document.content)
+
+    def test_chart_workbook_without_merges_passes_through_unchanged(self):
+        content = self._workbook_with_merged_cells_and_chart()
+        wb = openpyxl.load_workbook(io.BytesIO(content))
+        wb.active.unmerge_cells("A1:B1")
+        bio = io.BytesIO()
+        wb.save(bio)
+        content = bio.getvalue()
+
+        self.assertEqual(fill_merged_cells_xlsx(content), content)
+
+    def test_fill_does_not_serialize_dedicated_chart_sheets(self):
+        content = self._workbook_with_merged_cells_and_chart()
+        wb = openpyxl.load_workbook(io.BytesIO(content))
+        ws = wb.active
+        chart = BarChart()
+        chart.add_data(
+            Reference(ws, min_col=2, min_row=2, max_row=4),
+            titles_from_data=True,
+        )
+        chart.set_categories(Reference(ws, min_col=1, min_row=3, max_row=4))
+        chart_sheet = wb.create_chartsheet("Summary")
+        chart_sheet.add_chart(chart)
+        wb.active = chart_sheet
+        bio = io.BytesIO()
+        wb.save(bio)
+
+        with patch(
+            "openpyxl.chart._chart.ChartBase._write",
+            side_effect=AttributeError("'Typed' object has no attribute 'to_tree'"),
+        ):
+            filled = fill_merged_cells_xlsx(bio.getvalue())
+
+        out_wb = openpyxl.load_workbook(io.BytesIO(filled), data_only=True)
+        self.assertEqual(out_wb.active._charts, [])
+        self.assertEqual(out_wb.active.title, "Sheet")
+        self.assertEqual(out_wb.chartsheets, [])
+
+    def test_fill_keeps_active_worksheet_after_removing_earlier_chart_sheet(self):
+        content = self._workbook_with_merged_cells_and_chart()
+        wb = openpyxl.load_workbook(io.BytesIO(content))
+        data_sheet = wb.active
+        chart = BarChart()
+        chart.add_data(
+            Reference(data_sheet, min_col=2, min_row=2, max_row=4),
+            titles_from_data=True,
+        )
+        chart_sheet = wb.create_chartsheet("Summary", 0)
+        chart_sheet.add_chart(chart)
+        wb.active = data_sheet
+        bio = io.BytesIO()
+        wb.save(bio)
+
+        filled = fill_merged_cells_xlsx(bio.getvalue())
+
+        out_wb = openpyxl.load_workbook(io.BytesIO(filled), data_only=True)
+        self.assertEqual(out_wb.active.title, "Sheet")
+        self.assertEqual(out_wb.chartsheets, [])
 
     def test_parse_en_mergecell_workbook(self):
         path = os.path.join(
@@ -404,3 +620,26 @@ class ExcelParserTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExcelSourceBlocksTest(unittest.TestCase):
+    def test_rows_carry_sheet_and_row_number(self):
+        import io
+
+        import openpyxl
+
+        from docreader.parser.excel_parser import ExcelParser
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "明细"
+        ws["B3"] = "螺栓"
+        ws["A5"] = "合计"
+        buf = io.BytesIO()
+        wb.save(buf)
+
+        doc = ExcelParser(file_name="a.xlsx", file_type="xlsx").parse_into_text(buf.getvalue())
+        rows = [(b["locator"]["sheet"], b["locator"]["row_start"]) for b in doc.source_blocks]
+        self.assertEqual(rows, [("明细", 3), ("明细", 5)])
+        first = doc.source_blocks[0]
+        self.assertEqual(doc.content[first["start"]:first["end"]], "B: 螺栓\n")

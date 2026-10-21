@@ -1,40 +1,66 @@
 package vlm
 
-import "testing"
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
 
-func TestBuildChatRequestDisablesThinking(t *testing.T) {
-	vlm := &OllamaVLM{modelName: "qwen3.6:27b"}
+	"github.com/Tencent/WeKnora/internal/models/utils/ollama"
+	"github.com/stretchr/testify/require"
+)
 
-	req := vlm.buildChatRequest([][]byte{{1, 2, 3}}, "describe this image")
-
-	if req.Think == nil {
-		t.Fatal("buildChatRequest omitted think; want explicit false")
-	}
-	if enabled, ok := req.Think.Value.(bool); !ok || enabled {
-		t.Fatalf("buildChatRequest think = %#v; want false", req.Think.Value)
-	}
-}
-
-func TestBuildChatRequestPreservesModelPromptAndImages(t *testing.T) {
-	vlm := &OllamaVLM{modelName: "qwen3.6:27b"}
-	firstImage := []byte{1, 2, 3}
-	secondImage := []byte{4, 5, 6}
-
-	req := vlm.buildChatRequest(
-		[][]byte{firstImage, nil, secondImage},
-		"describe these images",
-	)
-
-	if req.Model != "qwen3.6:27b" {
-		t.Fatalf("buildChatRequest model = %q; want qwen3.6:27b", req.Model)
-	}
-	if len(req.Messages) != 1 || req.Messages[0].Content != "describe these images" {
-		t.Fatalf("buildChatRequest messages = %#v; want one user prompt", req.Messages)
-	}
-	if len(req.Messages[0].Images) != 2 {
-		t.Fatalf("buildChatRequest image count = %d; want 2", len(req.Messages[0].Images))
-	}
-	if string(req.Messages[0].Images[0]) != string(firstImage) || string(req.Messages[0].Images[1]) != string(secondImage) {
-		t.Fatalf("buildChatRequest images = %#v; want non-empty images in order", req.Messages[0].Images)
+func TestOllamaPredictThinkingRequest(t *testing.T) {
+	on, off := true, false
+	for _, tc := range []struct {
+		name string
+		opts *PredictOptions
+		want *bool
+	}{
+		{"legacy", nil, nil},
+		{"unset", &PredictOptions{}, nil},
+		{"enabled", &PredictOptions{Thinking: &on}, &on},
+		{"disabled", &PredictOptions{Thinking: &off}, &off},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			requests := make(chan map[string]any, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodHead {
+					w.WriteHeader(http.StatusOK)
+					return
+				}
+				var body map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Error(err)
+				}
+				requests <- body
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"message":{"role":"assistant","content":"caption"},"done":true}`))
+			}))
+			defer server.Close()
+			t.Setenv("OLLAMA_BASE_URL", server.URL)
+			service, err := ollama.GetOllamaService()
+			require.NoError(t, err)
+			model, err := NewOllamaVLM(&Config{ModelName: "test"}, service)
+			require.NoError(t, err)
+			var result string
+			if tc.opts == nil {
+				result, err = model.Predict(context.Background(), nil, "describe")
+			} else {
+				result, err = model.PredictWithOptions(context.Background(), nil, "describe", tc.opts)
+			}
+			require.NoError(t, err)
+			require.Equal(t, "caption", result)
+			body := <-requests
+			if tc.want == nil {
+				require.NotContains(t, body, "think")
+			} else {
+				require.Equal(t, *tc.want, body["think"])
+			}
+			options := body["options"].(map[string]any)
+			require.NotContains(t, options, "think")
+			require.Equal(t, 0.1, options["temperature"])
+		})
 	}
 }

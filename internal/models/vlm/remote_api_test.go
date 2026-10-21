@@ -1,8 +1,11 @@
 package vlm
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"image"
+	"image/jpeg"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -28,14 +31,20 @@ func TestRemoteAPIVLMSendsConfiguredThinkingFlag(t *testing.T) {
 		BaseURL:   server.URL + "/v1",
 		ModelName: "Qwen3.6-27B-AWQ",
 		Extra: map[string]any{
-			"enable_thinking": "false",
+			"enable_thinking":  "false",
+			"provider":         "generic",
+			"thinking_control": "chat_template_kwargs",
 		},
 	})
 	if err != nil {
 		t.Fatalf("NewRemoteAPIVLM() error = %v", err)
 	}
 
-	if _, err := model.Predict(context.Background(), [][]byte{{0xff, 0xd8, 0xff}}, "describe"); err != nil {
+	var imageBytes bytes.Buffer
+	if err := jpeg.Encode(&imageBytes, image.NewRGBA(image.Rect(0, 0, 1, 1)), nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := model.Predict(context.Background(), [][]byte{imageBytes.Bytes()}, "describe"); err != nil {
 		t.Fatalf("Predict() error = %v", err)
 	}
 

@@ -84,9 +84,25 @@ type KnowledgeService interface {
 		page *types.Pagination,
 		filter types.KnowledgeListFilter,
 	) (*types.PageResult, error)
+	// ListKnowledgeFolderTree returns the folder hierarchy derived from the
+	// folder_path of every knowledge entry in a knowledge base, with per-folder
+	// document counts. It powers the document sidebar tree.
+	ListKnowledgeFolderTree(ctx context.Context, kbID string) (*types.KnowledgeFolderTree, error)
+	// MoveKnowledgeToFolder re-files knowledge entries under the given folder
+	// path (empty means the knowledge base top level). Folders are derived from
+	// the stored paths, so a path that does not exist yet is created implicitly.
+	MoveKnowledgeToFolder(
+		ctx context.Context,
+		kbID string,
+		ids []string,
+		folderPath string,
+	) (int64, error)
+	// RenameKnowledgeFolder moves a folder and everything below it to a new path.
+	RenameKnowledgeFolder(ctx context.Context, kbID string, from string, to string) (int64, error)
 	// DeleteKnowledge deletes knowledge by ID.
 	DeleteKnowledge(ctx context.Context, id string) error
-	// DeleteKnowledgeList deletes multiple knowledge entries by IDs.
+	// DeleteKnowledgeList requires an explicit write grant for every affected KB.
+	// It validates the complete selection before changing any deletion state.
 	DeleteKnowledgeList(ctx context.Context, ids []string) error
 	// GetKnowledgeFile retrieves the file associated with the knowledge.
 	GetKnowledgeFile(ctx context.Context, id string) (io.ReadCloser, string, error)
@@ -111,6 +127,18 @@ type KnowledgeService interface {
 		ctx context.Context,
 		knowledgeID string,
 		processOverrides *types.KnowledgeProcessOverrides,
+	) (*types.Knowledge, error)
+	// ReplaceKnowledgeFile replaces the source file of an existing file knowledge
+	// while preserving its ID, then re-parses it. A path-qualified customFileName
+	// also sets the folder; a bare filename keeps the current folder. Metadata
+	// entries are merged into the stored metadata. Identical content on this
+	// same path returns a DuplicateKnowledgeError without re-parsing.
+	ReplaceKnowledgeFile(
+		ctx context.Context,
+		knowledgeID string,
+		file *multipart.FileHeader,
+		customFileName string,
+		metadata map[string]string,
 	) (*types.Knowledge, error)
 	// CancelKnowledgeParse marks an in-progress parse as cancelled by the
 	// user. The knowledge row and any partially written chunks/index are
@@ -137,6 +165,7 @@ type KnowledgeService interface {
 		keyword string,
 		searchField string,
 		sortOrder string,
+		isEnabled *bool,
 	) (*types.PageResult, error)
 	// UpsertFAQEntries imports or appends FAQ entries asynchronously.
 	// When DryRun is true, only validates entries without actually importing.
@@ -163,7 +192,7 @@ type KnowledgeService interface {
 	ExportFAQEntriesJSON(ctx context.Context, kbID string) ([]byte, error)
 	// UpdateKnowledgeTagBatch updates tag for document knowledge items in batch.
 	// authorizedKBID restricts all updates to knowledge items belonging to this KB;
-	// pass empty string to skip (caller must ensure authorization by other means).
+	// an empty value still requires an explicit write grant for every affected KB.
 	UpdateKnowledgeTagBatch(ctx context.Context, authorizedKBID string, updates map[string][]string) error
 	// SetKnowledgeTags replaces all tags for a single knowledge entry.
 	SetKnowledgeTags(ctx context.Context, knowledgeID string, tagIDs []string) error
@@ -226,11 +255,18 @@ type KnowledgeRepository interface {
 		tenantID uint64, kbID string, page *types.Pagination, filter types.KnowledgeListFilter,
 	) ([]*types.Knowledge, int64, error)
 	UpdateKnowledge(ctx context.Context, knowledge *types.Knowledge) error
+	// UpdateKnowledgeForTransfer conditionally persists a transfer checkpoint
+	// and its storage delta in one transaction, without inserting missing rows.
+	UpdateKnowledgeForTransfer(ctx context.Context, before, after *types.Knowledge) error
+
 	// UpdateKnowledgeBatch updates knowledge items in batch
 	UpdateKnowledgeBatch(ctx context.Context, knowledgeList []*types.Knowledge) error
 	DeleteKnowledge(ctx context.Context, tenantID uint64, id string) error
 	DeleteKnowledgeList(ctx context.Context, tenantID uint64, ids []string) error
 	GetKnowledgeBatch(ctx context.Context, tenantID uint64, ids []string) ([]*types.Knowledge, error)
+	// GetKnowledgeBatchByIDOnly returns knowledge by IDs without tenant filter
+	// (for shared-KB resolution; callers check permissions on every row).
+	GetKnowledgeBatchByIDOnly(ctx context.Context, ids []string) ([]*types.Knowledge, error)
 	// CheckKnowledgeExists checks if knowledge already exists.
 	// For file types, check by fileHash or (fileName+fileSize).
 	// For URL types, check by URL.
@@ -241,6 +277,30 @@ type KnowledgeRepository interface {
 		kbID string,
 		params *types.KnowledgeCheckParams,
 	) (bool, *types.Knowledge, error)
+	// ListKnowledgeFolderCounts aggregates the number of knowledge entries
+	// stored directly in each folder_path of a knowledge base.
+	ListKnowledgeFolderCounts(
+		ctx context.Context,
+		tenantID uint64,
+		kbID string,
+	) ([]*types.KnowledgeFolderCount, error)
+	// UpdateKnowledgeFolderPath files the given entries under folderPath.
+	UpdateKnowledgeFolderPath(
+		ctx context.Context,
+		tenantID uint64,
+		kbID string,
+		ids []string,
+		folderPath string,
+	) (int64, error)
+	// RenameKnowledgeFolderPath rewrites folder_path for a folder and all of its
+	// descendants. Renaming onto an existing path merges the folders.
+	RenameKnowledgeFolderPath(
+		ctx context.Context,
+		tenantID uint64,
+		kbID string,
+		from string,
+		to string,
+	) (int64, error)
 	// AminusB returns the IDs of knowledge in A that have no counterpart in B,
 	// comparing file_hash as a multiset (so duplicate-count differences and
 	// NULL/empty hashes are handled correctly, letting a clone converge).
@@ -252,7 +312,12 @@ type KnowledgeRepository interface {
 	UpdateKnowledgeColumns(ctx context.Context, id string, values map[string]interface{}) error
 	// UpdateActiveDeletingKnowledgeColumns updates an active, non-deleted knowledge row
 	// only when it is still in the transient deleting state.
-	UpdateActiveDeletingKnowledgeColumns(ctx context.Context, id string, values map[string]interface{}) (bool, error)
+	UpdateActiveDeletingKnowledgeColumns(
+		ctx context.Context,
+		tenantID uint64,
+		kbID, id string,
+		values map[string]interface{},
+	) (bool, error)
 	// FinalizeSubtask atomically decrements pending_subtasks_count for the
 	// given knowledge and promotes parse_status from "finalizing" to
 	// "completed" when the count reaches zero. Returns the post-decrement
@@ -264,6 +329,9 @@ type KnowledgeRepository interface {
 	// whether the transition took place (false when the row's parse_status
 	// was no longer "processing", e.g. user cancelled / deleted in flight).
 	SetFinalizing(ctx context.Context, id string, expectedSubtasks int) (bool, error)
+	// CompleteProcessingWithoutSubtasks atomically completes a still-processing
+	// document that has no enrichment tasks, without overriding cancel/delete.
+	CompleteProcessingWithoutSubtasks(ctx context.Context, id string) (bool, error)
 	// CountKnowledgeByKnowledgeBaseID counts the number of knowledge items in a knowledge base.
 	CountKnowledgeByKnowledgeBaseID(ctx context.Context, tenantID uint64, kbID string) (int64, error)
 	// CountKnowledgeByStatus counts the number of knowledge items with the specified parse status.
@@ -278,14 +346,37 @@ type KnowledgeRepository interface {
 	// FindByMetadataKeyPrefix finds knowledge items whose metadata[key] starts
 	// with the given prefix. Used to sweep an external node's attachment sub-items.
 	FindByMetadataKeyPrefix(ctx context.Context, tenantID uint64, kbID string, key string, prefix string) ([]*types.Knowledge, error)
+	// FindByDataSourceExternalID finds a knowledge item owned by one data source
+	// and identified by the source's external item ID.
+	FindByDataSourceExternalID(
+		ctx context.Context, tenantID uint64, kbID, dataSourceID, externalID string,
+	) (*types.Knowledge, error)
+	// HardDeleteKnowledge physically removes a row after DeleteKnowledge's soft-delete
+	// cascade. Sync-internal deletions use this so rows never become tombstones.
+	HardDeleteKnowledge(ctx context.Context, tenantID uint64, id string) error
+	// HardDeleteKnowledgeList is the batch counterpart of HardDeleteKnowledge.
+	HardDeleteKnowledgeList(ctx context.Context, tenantID uint64, ids []string) error
 	// SearchKnowledgeInScopes searches knowledge items by keyword within the given (tenant_id, kb_id) scopes (own + shared).
 	SearchKnowledgeInScopes(ctx context.Context, scopes []types.KnowledgeSearchScope, keyword string, offset, limit int, fileTypes []string) ([]*types.Knowledge, bool, int64, error)
 	// ListIDsByTagIDs returns all knowledge IDs that have any of the specified tag IDs (OR semantics).
 	ListIDsByTagIDs(ctx context.Context, tenantID uint64, kbID string, tagIDs []string) ([]string, error)
 	// SetKnowledgeTags replaces all tags for a single knowledge entry (deletes old, inserts new).
 	SetKnowledgeTags(ctx context.Context, knowledgeID string, tagIDs []string) error
+	// AddKnowledgeTagRelations attaches tags without removing existing ones,
+	// after validating that the knowledge and every tag belong to the given
+	// tenant and knowledge base. Duplicate deliveries are idempotent.
+	AddKnowledgeTagRelations(
+		ctx context.Context,
+		tenantID uint64,
+		kbID, knowledgeID string,
+		tagIDs []string,
+	) error
 	// GetKnowledgeTags returns tags for multiple knowledge IDs.
 	GetKnowledgeTags(ctx context.Context, knowledgeIDs []string) (map[string][]*types.KnowledgeTag, error)
 	// DeleteKnowledgeTagRelations deletes all tag relations for a knowledge entry.
 	DeleteKnowledgeTagRelations(ctx context.Context, knowledgeID string) error
+	// ListKnowledgeProfileRows returns the lightweight projection used to
+	// aggregate a knowledge-base description: every enabled document that has
+	// finished parsing (completed or finalizing), without content columns.
+	ListKnowledgeProfileRows(ctx context.Context, tenantID uint64, kbID string) ([]*types.KnowledgeProfileRow, error)
 }

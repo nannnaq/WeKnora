@@ -30,3 +30,90 @@ func TestGetWebSearchProviderTypesIncludesZhipuConfig(t *testing.T) {
 		t.Fatalf("unexpected content size config metadata: %+v", zhipu.ConfigFields[1])
 	}
 }
+
+func TestGetWebSearchProviderTypesIncludesExa(t *testing.T) {
+	var exa *WebSearchProviderTypeInfo
+	providerTypes := GetWebSearchProviderTypes()
+	for i := range providerTypes {
+		if providerTypes[i].ID == string(WebSearchProviderTypeExa) {
+			exa = &providerTypes[i]
+			break
+		}
+	}
+	if exa == nil {
+		t.Fatal("Exa provider metadata is missing")
+	}
+	if !exa.RequiresAPIKey || !exa.SupportsProxy {
+		t.Fatalf("unexpected Exa capability metadata: %+v", exa)
+	}
+	if len(exa.ConfigFields) != 1 {
+		t.Fatalf("len(ConfigFields) = %d, want 1", len(exa.ConfigFields))
+	}
+	field := exa.ConfigFields[0]
+	if field.Key != "include_text" || field.Type != "select" || field.Default != "false" {
+		t.Fatalf("unexpected Exa config metadata: %+v", field)
+	}
+	if len(field.Options) != 2 || field.Options[0].Value != "true" || field.Options[1].Value != "false" {
+		t.Fatalf("unexpected Exa config options: %+v", field.Options)
+	}
+}
+func TestGetWebSearchProviderTypesIncludesMetaso(t *testing.T) {
+	var metaso *WebSearchProviderTypeInfo
+	providerTypes := GetWebSearchProviderTypes()
+	for i := range providerTypes {
+		if providerTypes[i].ID == string(WebSearchProviderTypeMetaso) {
+			metaso = &providerTypes[i]
+			break
+		}
+	}
+	if metaso == nil {
+		t.Fatal("Metaso provider type not found")
+	}
+	if !metaso.RequiresAPIKey || !metaso.SupportsProxy || len(metaso.ConfigFields) != 1 {
+		t.Fatalf("unexpected Metaso metadata: %+v", metaso)
+	}
+	if field := metaso.ConfigFields[0]; field.Key != "scope" || field.Default != "webpage" || len(field.Options) != 6 {
+		t.Fatalf("unexpected Metaso scope metadata: %+v", field)
+	}
+}
+
+func TestGetWebSearchProviderTypesIncludesBocha(t *testing.T) {
+	var bocha *WebSearchProviderTypeInfo
+	providerTypes := GetWebSearchProviderTypes()
+	for i := range providerTypes {
+		if providerTypes[i].ID == string(WebSearchProviderTypeBocha) {
+			bocha = &providerTypes[i]
+			break
+		}
+	}
+	if bocha == nil {
+		t.Fatal("Bocha provider type not found")
+	}
+	if !bocha.RequiresAPIKey || !bocha.SupportsProxy || len(bocha.ConfigFields) != 2 {
+		t.Fatalf("unexpected Bocha metadata: %+v", bocha)
+	}
+	freshness := bocha.ConfigFields[0]
+	if freshness.Key != "freshness" || freshness.Default != "noLimit" || len(freshness.Options) != 5 {
+		t.Fatalf("unexpected Bocha freshness metadata: %+v", freshness)
+	}
+	if summary := bocha.ConfigFields[1]; summary.Key != "summary" || summary.Default != "true" {
+		t.Fatalf("unexpected Bocha summary metadata: %+v", summary)
+	}
+}
+
+func TestGetWebSearchProviderTypesIncludesSerply(t *testing.T) {
+	var serply *WebSearchProviderTypeInfo
+	providerTypes := GetWebSearchProviderTypes()
+	for i := range providerTypes {
+		if providerTypes[i].ID == string(WebSearchProviderTypeSerply) {
+			serply = &providerTypes[i]
+			break
+		}
+	}
+	if serply == nil {
+		t.Fatal("Serply provider type not found")
+	}
+	if !serply.RequiresAPIKey || !serply.SupportsProxy || serply.RequiresEngineID || serply.RequiresBaseURL {
+		t.Fatalf("unexpected Serply metadata: %+v", serply)
+	}
+}

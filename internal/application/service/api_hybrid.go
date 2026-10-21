@@ -10,6 +10,7 @@ When live evidence directly matches:
 - Start with a detailed "Current live status" section, localized to the user's language, using the relevant live values.
 - Add a separate "Static specifications and operating notes" section only for durable details from retrieved knowledge.
 - Never present static specifications as a current reading, and do not say that current data is unavailable when matching live evidence exists.
+- Preserve units exactly as supplied by live evidence. When a numeric field has no explicit unit, write "unit not provided" in the user's language. For example, live range=12 with no unit must be rendered as "12（单位未提供）", never "12 km" or "12 海里". Do not borrow units from field names, device types, or static specifications.
 
 When live evidence is absent, does not match the requested target, or lacks the requested fields:
 - State that limitation briefly, then answer in detail from the retrieved knowledge context.

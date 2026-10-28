@@ -22,15 +22,18 @@ services:
       app: {condition: service_healthy}
   app:
     <<: *defaults
-    image: weknora-app:arm64-152-1b22397b
+    image: weknora-app:arm64-152-externalidentity-20261028-r2
     container_name: WeKnora-app
     env_file: ../../.env
+    environment:
+      WEKNORA_EXTERNAL_IDENTITY_CONFIG_FILE: /run/weknora-external/config.json
     ports: ['192.168.18.152:9751:8080']
     volumes:
       - ../../config/config.yaml:/app/config/config.yaml:ro
       - ../../config/builtin_models.yaml:/app/config/builtin_models.yaml:ro
       - ../../.weknora-deploy/runtime/files:/data/files
       - ../../.weknora-deploy/runtime/docreader-tmp:/tmp/docreader:ro
+      - ../../.weknora-deploy/external-identity:/run/weknora-external:ro
     depends_on:
       docreader: {condition: service_healthy}
       qdrant: {condition: service_started}

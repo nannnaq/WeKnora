@@ -1,9 +1,9 @@
 # 192.168.18.152 部署记录
 
-初次部署日期：2026-10-12；本次升级日期：2026-10-21。源码位于
+初次部署日期：2026-10-12；本次升级日期：2026-10-28。源码位于
 `/mnt/storage/cjy/WeKnora`，来源为 `https://github.com/nannnaq/WeKnora.git`。
-当前后端源码提交 `1b22397b`，基于合并提交 `05837493`，已合并官方 main
-`e0c28bef`（0.8.3），并保留原有 knowledge-chat 调用协议和实时图谱、规则上下文。
+当前后端源码基于 `a0d415a7`，外部账号接入模块提交为 `ac1d8f75`，版本为 0.8.3。
+本次沿用原运行环境，保留 knowledge-chat 调用协议和实时图谱、规则上下文。
 项目级 Git 代理为本机已有的 `http://127.0.0.1:7897`。
 
 访问入口：**http://192.168.18.152:9750/**。使用 103 上原有的账号和密码登录。
@@ -102,6 +102,31 @@ docker compose --env-file .env -f deploy/local152/compose.yaml logs -f app
 
 独立 PostgreSQL 使用普通 PostgreSQL 17 存储项目元数据；103 ParadeDB 的附加
 GIS/搜索扩展系统表不作为项目数据复制。实际检索与 103 一样由 Qdrant 提供。
+
+## 2026-10-28 DSH 外部账号桥部署
+
+后端运行镜像为 `weknora-app:arm64-152-externalidentity-20261028-r2`，固定 image ID 为 `sha256:10ebad160393ab3590949d492e8e6bf3d02ffa0fcc61191f0824d2f1d111cafb`。本次只更新 app，前端、MCP、解析及存储服务继续沿用原部署。
+
+`compose.yaml` 已持久添加 `WEKNORA_EXTERNAL_IDENTITY_CONFIG_FILE=/run/weknora-external/config.json` 和只读配置目录挂载，因此现有 systemd 服务使用基础 Compose 文件重启时也会加载账号桥。私有文件位于 `.weknora-deploy/external-identity/`，目录权限 `0700`、配置及密钥 `0600`；来源 ID 为 `dsh-hub-local152`，issuer 为 DSH 本地平台 `531a4966-f1e3-4193-946c-8568c0c73840`，共享空间角色为 `editor`。邀请码与接入密钥仅保存在本机私有配置中。
+
+接入模块和配置约定见 [外部账号接入](../../internal/integration/externalidentity/README.md)。DSH 本地入口为 `http://192.168.18.152:3088`；点击连接后使用稳定平台身份创建个人 Owner 工作空间并加入团队共享空间。内部邮箱由身份生成，普通注册邮箱校验保持原逻辑。该功能不提供 WeKnora 网页 SSO。
+
+Go 1.26.9 构建使用已有 ARM64 工具链容器及本机模块缓存，保留 GoJieba 和原运行时依赖。增量镜像的 Dockerfile 与二进制位于 `.weknora-deploy/local152-bridge-20261028/build/`；镜像为编译时的 GoJieba 字典路径建立到原 `/go/pkg/mod/` 字典的只读运行路径，避免字典加载失败。完整重建应使用同样可解析的字典路径或相应运行文件布局。
+
+升级前备份位于 `.weknora-deploy/local152-bridge-20261028/`：`database-before.dump` 为事务一致 PostgreSQL 导出，已通过 `pg_restore --list` 核对；同目录保存原环境、Compose、原生账号及知识库快照和 `rollback.yaml`。原 `SYSTEM_AES_KEY` 保留，官方 schema 仍为 133 / dirty=false，外部接入独立增加 `integration_external_identity_bindings` 表。
+
+已经验证后端健康、原项目 API Key 和真实 DSH 网页一键连接。新账号是个人工作空间 Owner、团队共享空间 editor，未获得系统管理员或跨工作空间特权；断开后的旧 Key 被拒绝，重连复用原账号和工作空间并签发新 Key。DSH 项目原主机 `.local/hub/deployment/evidence/` 保存脱敏报告。
+
+回退前先通过当前版本断开集成连接，撤销专用 Key；保留上线后新增账号和资料。随后可执行：
+
+```bash
+docker compose --env-file .env \
+  -f deploy/local152/compose.yaml \
+  -f .weknora-deploy/local152-bridge-20261028/rollback.yaml \
+  up -d --no-deps --wait app
+```
+
+本次未升级官方顺序 schema，原后端忽略扩展表。不要将旧数据库备份直接覆盖到已有新增资料的实例；数据恢复应另行核对业务存储和匹配的加密主密钥。
 
 ## 2026-10-21 镜像重建
 

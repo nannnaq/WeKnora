@@ -18,6 +18,7 @@ import (
 	"github.com/Tencent/WeKnora/internal/config"
 	"github.com/Tencent/WeKnora/internal/handler"
 	"github.com/Tencent/WeKnora/internal/handler/session"
+	"github.com/Tencent/WeKnora/internal/integration/externalidentity"
 	"github.com/Tencent/WeKnora/internal/logger"
 	"github.com/Tencent/WeKnora/internal/mcpserver"
 	"github.com/Tencent/WeKnora/internal/middleware"
@@ -31,6 +32,7 @@ import (
 type RouterParams struct {
 	dig.In
 
+	ExternalIdentity             *externalidentity.Service `optional:"true"`
 	Config                       *config.Config
 	FileService                  interfaces.FileService
 	UserService                  interfaces.UserService
@@ -207,6 +209,9 @@ func NewRouter(params RouterParams) *gin.Engine {
 	r.GET("/api/v1/local-browser/extension", params.SessionHandler.BrowserSkillExtension)
 	r.POST("/api/v1/local-browser/extension/authorize", params.SessionHandler.BrowserSkillAuthorize)
 	r.POST("/api/v1/local-browser/internal", params.SessionHandler.BrowserSkillInternal)
+
+	// Optional integration authenticates its own server-to-server requests.
+	params.ExternalIdentity.Register(r)
 
 	// 认证中间件
 	r.Use(middleware.Auth(params.TenantService, params.UserService, params.TenantMemberService, params.TenantAPIKeyService, params.Config))

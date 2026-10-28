@@ -1,0 +1,7 @@
+# Optional overlay; prepare the private files before enabling it.
+services:
+  app:
+    environment:
+      WEKNORA_EXTERNAL_IDENTITY_CONFIG_FILE: /run/weknora-external/config.json
+    volumes:
+      - ../../.weknora-deploy/external-identity:/run/weknora-external:ro

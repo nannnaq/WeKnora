@@ -1,3 +1,4 @@
+import { authStorage } from '../integration/storage'
 /**
  * 受保护文件（provider:// / resource:// 等）的访问上下文。
  *
@@ -109,12 +110,12 @@ export function isProtectedFileProxyPath(pathname: string): boolean {
 function tenantRequestHeaders(): Record<string, string> {
   const headers: Record<string, string> = {};
   try {
-    const token = (localStorage.getItem('weknora_token') || '').trim();
+    const token = (authStorage.getItem('weknora_token') || '').trim();
     if (token) {
       headers['Authorization'] = `Bearer ${token}`;
     }
 
-    const selectedTenantId = (localStorage.getItem('weknora_selected_tenant_id') || '').trim();
+    const selectedTenantId = (authStorage.getItem('weknora_selected_tenant_id') || '').trim();
     if (selectedTenantId) {
       // Always attach when a selected tenant is set. Same rationale as
       // utils/request.ts / api/chat/streame.ts: the

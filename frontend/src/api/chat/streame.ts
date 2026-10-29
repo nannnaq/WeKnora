@@ -1,3 +1,4 @@
+import { authStorage } from '../../integration/storage'
 import { fetchEventSource } from '@microsoft/fetch-event-source';
 import { ref, onUnmounted } from 'vue';
 import { generateRandomString } from '@/utils/index';
@@ -84,7 +85,7 @@ export function useStream() {
     const apiUrl = getApiBaseUrl();
     
     const embedToken = params.embed_token;
-    const token = embedToken || localStorage.getItem('weknora_token');
+    const token = embedToken || authStorage.getItem('weknora_token');
     if (!token) {
       error.value = i18n.global.t('error.tokenNotFound');
       stopStream();
@@ -98,7 +99,7 @@ export function useStream() {
     // hydrate）都会让两者相等，使得后续流式请求悄悄丢 header、落到
     // home 空间上，导致 SSE 接口返回 404。直接附即可——后端
     // IsTenantAccessible 也允许 header 指向自家空间。
-    const selectedTenantId = localStorage.getItem('weknora_selected_tenant_id');
+    const selectedTenantId = authStorage.getItem('weknora_selected_tenant_id');
     const tenantIdHeader: string | null = selectedTenantId || null;
 
     // TTFB instrumentation: record the moment we kick off the request so
@@ -238,7 +239,7 @@ export function useStream() {
         headers: {
           "Content-Type": "application/json",
           "Authorization": embedToken ? `Embed ${embedToken}` : `Bearer ${authToken}`,
-          "Accept-Language": i18n.global.locale?.value || localStorage.getItem('locale') || 'zh-CN',
+          "Accept-Language": i18n.global.locale?.value || authStorage.getItem('locale') || 'zh-CN',
           "X-Request-ID": requestID,
           ...(!embedToken && tenantIdHeader ? { "X-Tenant-ID": tenantIdHeader } : {}),
           ...(params.embed_session_sig ? { "X-Embed-Session": params.embed_session_sig } : {}),

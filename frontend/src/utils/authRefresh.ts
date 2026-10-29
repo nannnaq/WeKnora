@@ -1,3 +1,6 @@
+import { integrationContext } from '../integration/context'
+import { requestIntegrationToken, expireIntegration } from '../integration/bridge'
+import { authStorage } from '../integration/storage'
 /**
  * Shared access-token refresh used by both axios and the chat SSE client.
  *
@@ -62,6 +65,7 @@ export function isEmbedPage(): boolean {
 }
 
 export function redirectToLogin() {
+  if (integrationContext()) { expireIntegration(); return }
   if (typeof window === 'undefined') return
   if (window.location.pathname === '/login') return
   if (isEmbedPage()) return
@@ -70,7 +74,7 @@ export function redirectToLogin() {
 
 export function clearAuthStorage() {
   for (const key of AUTH_STORAGE_KEYS) {
-    localStorage.removeItem(key)
+    authStorage.removeItem(key)
   }
 }
 
@@ -104,6 +108,14 @@ async function defaultRefresh(refreshToken: string): Promise<TokenRefreshResult>
 export async function refreshAccessTokenShared(
   options: RefreshAccessTokenOptions = {},
 ): Promise<string> {
+  if (integrationContext()) {
+    try {
+      const token = await requestIntegrationToken()
+      const { useAuthStore } = await import('@/stores/auth')
+      useAuthStore().setToken(token)
+      return token
+    } catch (error) { expireIntegration(); throw error }
+  }
   const messages = { ...defaultMessages, ...options.messages }
   const refresh = options.refresh ?? defaultRefresh
 
@@ -114,7 +126,7 @@ export async function refreshAccessTokenShared(
   }
 
   isRefreshing = true
-  const storedRefreshToken = localStorage.getItem('weknora_refresh_token')
+  const storedRefreshToken = authStorage.getItem('weknora_refresh_token')
 
   if (!storedRefreshToken) {
     clearAuthStorage()
@@ -133,9 +145,9 @@ export async function refreshAccessTokenShared(
     }
 
     const { token, refreshToken: newRefreshToken } = response.data
-    localStorage.setItem('weknora_token', token)
+    authStorage.setItem('weknora_token', token)
     if (newRefreshToken) {
-      localStorage.setItem('weknora_refresh_token', newRefreshToken)
+      authStorage.setItem('weknora_refresh_token', newRefreshToken)
     }
     processQueue(null, token)
     return token

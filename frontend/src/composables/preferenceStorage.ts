@@ -1,3 +1,4 @@
+import { authStorage } from '../integration/storage'
 /**
  * Shared localStorage utilities for per-user UI preferences (theme, fonts).
  *
@@ -23,7 +24,7 @@ const PREFERENCE_SUFFIXES = [
 
 export function readUserId(): string {
   try {
-    const raw = localStorage.getItem('weknora_user')
+    const raw = authStorage.getItem('weknora_user')
     if (!raw) return 'anon'
     const parsed = JSON.parse(raw)
     return parsed?.id ? String(parsed.id) : 'anon'
@@ -34,7 +35,7 @@ export function readUserId(): string {
 
 export function safeGetItem(key: string): string | null {
   try {
-    return localStorage.getItem(key)
+    return authStorage.getItem(key)
   } catch {
     return null
   }
@@ -42,7 +43,7 @@ export function safeGetItem(key: string): string | null {
 
 export function safeSetItem(key: string, value: string): void {
   try {
-    localStorage.setItem(key, value)
+    authStorage.setItem(key, value)
   } catch (err) {
     // Quota exceeded, disabled storage, private mode — surface in DevTools
     // so the issue is at least diagnosable, but don't break the UI.
@@ -52,7 +53,7 @@ export function safeSetItem(key: string, value: string): void {
 
 export function safeRemoveItem(key: string): void {
   try {
-    localStorage.removeItem(key)
+    authStorage.removeItem(key)
   } catch {
     // Same conditions as setItem; silent best-effort.
   }

@@ -5,7 +5,13 @@
       "issuer": "replace-with-hub-platform-id",
       "token_file": "/run/weknora-external/provisioner.key",
       "invite_code": "replace-with-private-invite-code",
-      "role": "editor"
+      "role": "editor",
+      "web": {
+        "origin": "https://weknora.example.com",
+        "parent_origins": [
+          "https://h-member-id.hub.example.com"
+        ]
+      }
     }
   ]
 }

@@ -1,3 +1,4 @@
+import { authStorage } from '../integration/storage'
 // src/utils/request.js
 import axios from "axios";
 import { generateRandomString, MAX_FILE_SIZE_MB, MAX_SKILL_BUNDLE_SIZE_MB } from "./index";
@@ -65,7 +66,7 @@ const instance = axios.create({
 
 // 获取当前用户语言（用于 Accept-Language header）
 export function getCurrentLanguage(): string {
-  return i18n.global.locale?.value || localStorage.getItem('locale') || 'zh-CN'
+  return i18n.global.locale?.value || authStorage.getItem('locale') || 'zh-CN'
 }
 
 
@@ -77,7 +78,7 @@ instance.interceptors.request.use(
 
     // 嵌入渠道使用 Embed token；勿用本地 JWT 覆盖（否则调试页会 401）
     if (!isEmbedAuth) {
-      const token = localStorage.getItem('weknora_token');
+      const token = authStorage.getItem('weknora_token');
       if (token) {
         config.headers["Authorization"] = `Bearer ${token}`;
       }
@@ -96,7 +97,7 @@ instance.interceptors.request.use(
     // 后端 IsTenantAccessible 已经允许 header 指向 home 空间（自家），
     // 所以无脑附不会引入新风险。
     if (!isEmbedAuth && !isEmbedPath) {
-      const selectedTenantId = localStorage.getItem('weknora_selected_tenant_id');
+      const selectedTenantId = authStorage.getItem('weknora_selected_tenant_id');
       if (selectedTenantId) {
         config.headers["X-Tenant-ID"] = selectedTenantId;
       }

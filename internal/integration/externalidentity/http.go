@@ -18,6 +18,7 @@ func (s *Service) Register(r gin.IRoutes) {
 	if s == nil || len(s.sources) == 0 {
 		return
 	}
+	s.registerWeb(r)
 	r.POST(Route, func(c *gin.Context) {
 		c.Header("Cache-Control", "no-store")
 		source, exists := s.sources[c.Param("source")]
@@ -28,6 +29,21 @@ func (s *Service) Register(r gin.IRoutes) {
 			return
 		}
 		action := c.Param("action")
+		if action == "web-session" {
+			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 4096)
+			var req WebRequest
+			if c.ShouldBindJSON(&req) != nil {
+				c.AbortWithStatus(400)
+				return
+			}
+			result, err := s.launchWeb(c.Request.Context(), source, req)
+			if err != nil {
+				webFailure(c, err)
+				return
+			}
+			c.JSON(200, gin.H{"success": true, "data": result})
+			return
+		}
 		if action != "ensure" && action != "revoke" {
 			c.JSON(http.StatusNotFound, gin.H{"error": "NOT_FOUND"})
 			return

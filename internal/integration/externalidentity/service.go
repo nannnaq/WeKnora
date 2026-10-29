@@ -20,8 +20,8 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// Binding belongs exclusively to this optional integration. AutoMigrate only
-// touches this table, so upstream's numbered migrations remain independent.
+// Binding belongs exclusively to this optional integration. Its extension
+// tables are separate from upstream's numbered migrations.
 type Binding struct {
 	Source          string `gorm:"primaryKey;size:128"`
 	Subject         string `gorm:"primaryKey;size:128"`
@@ -94,7 +94,7 @@ func newService(db *gorm.DB, users interfaces.UserService, orgs interfaces.Organ
 	if utils.GetAESKey() == nil {
 		return nil, errors.New("external identity requires SYSTEM_AES_KEY for encrypted credentials")
 	}
-	if err := db.AutoMigrate(&Binding{}); err != nil {
+	if err := db.AutoMigrate(&Binding{}, &WebSession{}); err != nil {
 		return nil, err
 	}
 	for _, source := range cfg.Sources {
@@ -264,6 +264,9 @@ func hashSuffix(source SourceConfig, subject string) string {
 }
 
 func (s *Service) revoke(ctx context.Context, binding *Binding) error {
+	if err := s.revokeWebSessions(ctx, binding); err != nil {
+		return err
+	}
 	if binding.TenantID == 0 {
 		return nil
 	}

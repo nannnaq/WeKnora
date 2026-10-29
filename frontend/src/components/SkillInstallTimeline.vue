@@ -70,6 +70,7 @@
 </template>
 
 <script setup lang="ts">
+import { authStorage } from '../integration/storage'
 import { onUnmounted, reactive, ref, watch } from 'vue'
 import { fetchEventSource } from '@microsoft/fetch-event-source'
 import { useChatStreamHandler } from '@/composables/useChatStreamHandler'
@@ -233,8 +234,8 @@ function stop() {
 // expired and the durable history is the only remaining source.
 async function follow(run: number): Promise<boolean> {
   const url = `${getApiBaseUrl()}${configSkillTranscriptUrl(props.configId, props.skillId)}`
-  const token = localStorage.getItem('weknora_token')
-  const tenantId = localStorage.getItem('weknora_selected_tenant_id')
+  const token = authStorage.getItem('weknora_token')
+  const tenantId = authStorage.getItem('weknora_selected_tenant_id')
   const ac = new AbortController()
   controller = ac
   if (run !== openRun) {
@@ -247,7 +248,7 @@ async function follow(run: number): Promise<boolean> {
     method: 'GET',
     headers: {
       Authorization: token ? `Bearer ${token}` : '',
-      'Accept-Language': i18n.global.locale?.value || localStorage.getItem('locale') || 'zh-CN',
+      'Accept-Language': i18n.global.locale?.value || authStorage.getItem('locale') || 'zh-CN',
       'X-Request-ID': generateRandomString(12),
       ...(tenantId ? { 'X-Tenant-ID': tenantId } : {}),
     },

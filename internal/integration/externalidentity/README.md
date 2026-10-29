@@ -46,3 +46,23 @@ go test ./internal/integration/externalidentity
 测试使用独立临时数据库和原生注册、Owner、API Key、共享权限服务，覆盖成员隔离、编辑权限、管理拒绝、同名冲突、失败重试、并发、重启恢复、撤销与旧请求拒绝、专用认证、关闭模块及配置权限。实际部署、真实账号数据与长期容量需要在对应环境另行核验。
 
 多服务并发可额外设置 `WEKNORA_IDENTITY_TEST_POSTGRES` 为一次性 PostgreSQL DSN 并运行 `go test -race ./internal/integration/externalidentity`。该测试只接受名为 `weknora_identity_test` 的数据库，创建独立随机 schema 并在结束时清理，验证两个服务对象处理同一身份时只保留一个账号和有效 Key。跨仓联调由 DSH 的 `npm run accept:weknora` 启动本包 `TestHubFixture`，使用临时 SQLite；普通测试不启动常驻 HTTP 服务。
+
+
+## 可选的完整应用集成
+
+来源可以额外配置 `web.origin`（浏览器可访问的 WeKnora 前端 origin）和 `web.parent_origins`（精确的 DSH 成员页面 origin 列表，含非默认端口）。不配置 `web` 时仅启用原有账号关联。对应 Hub 设置 `HUB_WEKNORA_WEB_URL`，安装连接器 0.3.1 和 `@dsh-team/weknora`。前端与后端均须升级；Nginx 模板包含专用入口和基于来源配置的 framing policy，Lite 内嵌前端使用相同规则。
+
+DSH 插件加载 `/external-app/:source/platform/knowledge-bases`，共用原生 Vue 应用的知识库、智能体、共享空间和相关聊天、编辑器、预览组件。仅对集成入口调整登录存储、初始加载和导航。认证读取集中通过 `frontend/src/integration/storage.ts`：普通页面仍读写原存储，集成页面使用 iframe 私有内存。刷新页面或切换账号会重新向 DSH 获取身份。
+
+服务端接口：
+
+- `POST /api/v1/integrations/external-accounts/:source/web-session`：沿用来源服务端密钥和机器请求约束，参数为原有身份字段及 `parent_origin`。仅已有且有效的绑定可以签发。返回 `url / ticket / expires_in / parent_origin`，票据为 32 字节随机值，有效 60 秒，数据库仅保存摘要。
+- `GET /api/v1/integrations/external-app/:source/config`：公开的父 origin 白名单，不包含账号或密钥。
+- `POST /api/v1/integrations/external-app/:source/exchange`：限同源浏览器请求，参数 `ticket / parent_origin`；原子单次兑换并再次检查绑定版本。返回短期原生 access token 和 user_id。
+- `GET /api/v1/integrations/external-app/frame-policy`：Nginx 通过 `X-External-App-URI` 内部子请求获取页面 CSP；未知来源和未启用来源拒绝加载。
+
+票据通过带随机 nonce、精确 origin 和窗口检查的 postMessage 传递，不进入 URL。原生个人 access token 有效 15 分钟、每次具有唯一 jti，并持久化于原生 token 仓库；不提供 refresh token，到期必须重新通过已登录的 DSH 申请。独立的 `user_access_token.go` 为此提供可复用签发方法，普通登录流程保持独立。
+
+扩展表 `integration_external_web_sessions` 保存票据摘要和原生 token ID。撤销账号关联时同时撤销该关联签发的插件会话；个人数据、共享关系及独立网页登录保留。PostgreSQL 使用绑定行锁，SQLite 与原有账号桥一样采用进程内锁和原子单次消费。业务权限仍由 WeKnora 原生 RBAC 校验。
+
+验证：`go test -race ./internal/integration/externalidentity`，以及前端 `npm run type-check`、`npm test -- src/integration/integration.test.ts src/utils/authRefresh.test.ts`、`npm run build`。真实浏览器还需核对三个模块、文件/SSE、账号切换与断开连接。

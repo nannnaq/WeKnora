@@ -9,13 +9,14 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/Tencent/WeKnora/internal/integration/externalidentity"
 	"github.com/Tencent/WeKnora/internal/logger"
 )
 
 // serveFrontendStatic registers a middleware that serves the frontend SPA
 // from the ./web directory if it exists. Must be called BEFORE auth middleware
 // so static files are served without authentication.
-func serveFrontendStatic(r *gin.Engine) {
+func serveFrontendStatic(r *gin.Engine, integration ...*externalidentity.Service) {
 	webDir := os.Getenv("WEKNORA_WEB_DIR")
 	if webDir == "" {
 		webDir = "./web"
@@ -46,6 +47,23 @@ func serveFrontendStatic(r *gin.Engine) {
 		// embedFrameAncestorsMiddleware. Keep the main SPA same-origin only.
 		if strings.HasPrefix(path, "/embed/") {
 			c.File(filepath.Join(absDir, "embed.html"))
+			c.Abort()
+			return
+		}
+		if strings.HasPrefix(path, externalidentity.WebPrefix) {
+			c.Header("Cache-Control", "no-store")
+			c.Header("Content-Security-Policy", "frame-ancestors 'none'")
+			if len(integration) == 0 || integration[0] == nil {
+				c.AbortWithStatus(403)
+				return
+			}
+			policy, allowed := integration[0].FramePolicy(path)
+			if !allowed {
+				c.AbortWithStatus(403)
+				return
+			}
+			c.Header("Content-Security-Policy", policy)
+			c.File(filepath.Join(absDir, "integration.html"))
 			c.Abort()
 			return
 		}

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -22,7 +23,19 @@ type SourceConfig struct {
 	TokenFile  string              `json:"token_file"`
 	InviteCode string              `json:"invite_code"`
 	Role       types.OrgMemberRole `json:"role"`
+	Web        *WebConfig          `json:"web,omitempty"`
 	tokenHash  [32]byte
+}
+
+// Web is opt-in and independent of the account provisioning bridge.
+type WebConfig struct {
+	Origin        string   `json:"origin"`
+	ParentOrigins []string `json:"parent_origins"`
+}
+
+func webOrigin(value string) bool {
+	u, err := url.Parse(value)
+	return err == nil && (u.Scheme == "https" || u.Scheme == "http") && u.Host != "" && u.User == nil && u.RawQuery == "" && u.Fragment == "" && u.Path == "" && u.String() == value
 }
 
 type Config struct {
@@ -88,6 +101,16 @@ func loadConfig(path string) (*Config, error) {
 			return nil, errors.New("external identity tokens require at least 32 characters")
 		}
 		source.tokenHash = sha256.Sum256([]byte(secret))
+		if source.Web != nil {
+			if !webOrigin(source.Web.Origin) || len(source.Web.ParentOrigins) == 0 || len(source.Web.ParentOrigins) > 16 {
+				return nil, errors.New("external web integration requires an origin and trusted parent origins")
+			}
+			for _, parent := range source.Web.ParentOrigins {
+				if !webOrigin(parent) {
+					return nil, errors.New("invalid external web parent origin")
+				}
+			}
+		}
 		seen[source.ID] = true
 	}
 	return &cfg, nil

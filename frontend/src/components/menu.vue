@@ -223,7 +223,8 @@
 
         <!-- 下半部分：用户菜单 -->
         <div class="menu_bottom">
-            <UserMenu />
+            <UserMenu v-if="!integrationContext()" />
+            <div v-else-if="!uiStore.sidebarCollapsed" style="padding: 12px; opacity: .7">{{ authStore.user?.username }}</div>
         </div>
 
     </div>
@@ -231,6 +232,7 @@
 
 <script setup lang="ts">
 import { storeToRefs } from 'pinia';
+import { integrationContext } from '../integration/context';
 import { onMounted, onUnmounted, watch, computed, ref, h, nextTick } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { getSessionsList, batchDelSessions, deleteAllSessions, getSession } from "@/api/chat/index";

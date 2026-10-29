@@ -147,7 +147,7 @@
             </svg>
           </span>
         </div>
-        <template v-if="!authStore.isLiteMode">
+        <template v-if="!authStore.isLiteMode && !integrationContext()">
           <div class="menu-divider"></div>
           <div class="menu-item danger" @click="handleLogout">
             <t-icon name="logout" class="menu-icon" />
@@ -220,6 +220,7 @@ import { useRouter } from 'vue-router'
 import { useUIStore } from '@/stores/ui'
 import { useAuthStore } from '@/stores/auth'
 import { MessagePlugin } from 'tdesign-vue-next'
+import { integrationContext } from '../integration/context'
 import { logout as logoutApi } from '@/api/auth'
 import { useI18n } from 'vue-i18n'
 import CreateTenantDialog from '@/components/CreateTenantDialog.vue'

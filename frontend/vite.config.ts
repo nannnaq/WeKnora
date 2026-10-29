@@ -43,6 +43,7 @@ function embedHtmlDevFallback(): Plugin {
         if (path.startsWith('/embed/') && path !== '/embed.html' && !path.includes('.')) {
           req.url = `/embed.html${qs}`
         }
+        if (path.startsWith('/external-app/')) req.url = `/integration.html${qs}`
         next()
       })
     },
@@ -120,6 +121,7 @@ export default defineConfig({
       input: {
         main: resolve(__dirname, 'index.html'),
         embed: resolve(__dirname, 'embed.html'),
+        integration: resolve(__dirname, 'integration.html'),
       },
       output: {
         manualChunks(id) {

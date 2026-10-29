@@ -174,7 +174,7 @@ func NewRouter(params RouterParams) *gin.Engine {
 
 	// 前端静态文件（仅 Lite 版本内嵌前端）
 	if handler.Edition == "lite" {
-		serveFrontendStatic(r)
+		serveFrontendStatic(r, params.ExternalIdentity)
 	}
 
 	// IM 回调路由（在认证中间件之前注册，使用各平台自身的签名验证）

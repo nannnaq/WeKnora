@@ -10,7 +10,7 @@ x-defaults: &defaults
 services:
   frontend:
     <<: *defaults
-    image: weknora-ui:arm64-152-05837493
+    image: weknora-ui:arm64-152-external-app-20261028
     container_name: WeKnora-frontend
     ports: ['192.168.18.152:9750:80']
     environment:
@@ -22,7 +22,7 @@ services:
       app: {condition: service_healthy}
   app:
     <<: *defaults
-    image: weknora-app:arm64-152-externalidentity-20261028-r2
+    image: weknora-app:arm64-152-external-app-20261028
     container_name: WeKnora-app
     env_file: ../../.env
     environment:

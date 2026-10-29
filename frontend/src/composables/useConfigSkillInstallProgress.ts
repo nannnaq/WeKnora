@@ -1,3 +1,4 @@
+import { authStorage } from '../integration/storage'
 import { ref } from 'vue'
 import { fetchEventSource } from '@microsoft/fetch-event-source'
 import {
@@ -84,15 +85,15 @@ export function useConfigSkillInstallProgress(options?: {
     const isCurrent = () => abortByKey.get(key) === controller
     const stopCurrent = () => { if (isCurrent()) stop(key) }
 
-    const token = localStorage.getItem('weknora_token')
-    const tenantId = localStorage.getItem('weknora_selected_tenant_id')
+    const token = authStorage.getItem('weknora_token')
+    const tenantId = authStorage.getItem('weknora_selected_tenant_id')
     const url = `${getApiBaseUrl()}${configSkillInstallEventsUrl(configId, skillId)}`
 
     void fetchEventSource(url, {
       method: 'GET',
       headers: {
         Authorization: token ? `Bearer ${token}` : '',
-        'Accept-Language': i18n.global.locale?.value || localStorage.getItem('locale') || 'zh-CN',
+        'Accept-Language': i18n.global.locale?.value || authStorage.getItem('locale') || 'zh-CN',
         'X-Request-ID': generateRandomString(12),
         ...(tenantId ? { 'X-Tenant-ID': tenantId } : {}),
       },

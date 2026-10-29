@@ -2,7 +2,7 @@
 
 初次部署日期：2026-10-12；本次升级日期：2026-10-28。源码位于
 `/mnt/storage/cjy/WeKnora`，来源为 `https://github.com/nannnaq/WeKnora.git`。
-当前后端源码基于 `a0d415a7`，外部账号接入模块提交为 `ac1d8f75`，版本为 0.8.3。
+当前后端源码基于 `a0d415a7`，包含外部账号接入模块 `ac1d8f75` 及完整应用集成入口，版本为 0.8.3。
 本次沿用原运行环境，保留 knowledge-chat 调用协议和实时图谱、规则上下文。
 项目级 Git 代理为本机已有的 `http://127.0.0.1:7897`。
 
@@ -165,3 +165,12 @@ MCP 的依赖约束没有变化，复用原镜像的可编辑安装；Docreader 
 
 现有 Qdrant 为 1.16.2，Go 客户端为 1.18.1，启动时会输出版本兼容提示。
 本轮 2560 维知识检索、重排和实时上下文联合回答均已实测通过。
+
+
+## 2026-10-28 DSH 完整应用插件
+
+本机前端和后端镜像分别为 `weknora-ui:arm64-152-external-app-20261028`、`weknora-app:arm64-152-external-app-20261028`。它们包含可选的 `/external-app/:source/` 入口和一次性票据登录，复用知识库、智能体、共享空间的原生页面。
+
+来源私有配置增加 `web.origin` 与 `web.parent_origins`，Hub 增加 `HUB_WEKNORA_WEB_URL`，成员 Host 安装连接器 0.3.1 和 WeKnora 插件。父页面地址为实际成员页面的 origin；端口部署须包含成员端口，不是 Hub 登录页的端口。配置细节见[完整应用集成](../../internal/integration/externalidentity/README.md#可选的完整应用集成)。
+
+原生账号与资料沿用现有数据。新增的扩展表保存票据摘要和插件会话的原生 token ID；普通 WeKnora 网页仍可独立登录。升级备份、构建文件和日志位于 `.weknora-deploy/full-app-20261028/`，其中包含升级前数据库导出、原 Compose 和私有来源配置。

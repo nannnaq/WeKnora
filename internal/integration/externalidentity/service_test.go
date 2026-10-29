@@ -56,7 +56,7 @@ func setupDatabase(t *testing.T, db *gorm.DB) fixture {
 	usersRepo := repository.NewUserRepository(db)
 	tenantService := service.NewTenantService(repository.NewTenantRepository(db), nil)
 	members := service.NewTenantMemberService(repository.NewTenantMemberRepository(db), nil, usersRepo, nil)
-	users := service.NewUserService(&config.Config{}, usersRepo, nil, tenantService, members, nil)
+	users := service.NewUserService(&config.Config{}, usersRepo, repository.NewAuthTokenRepository(db), tenantService, members, nil)
 	orgRepo := repository.NewOrganizationRepository(db)
 	shareRepo := repository.NewKBShareRepository(db)
 	orgs := service.NewOrganizationService(orgRepo, usersRepo, shareRepo, nil)

@@ -1,3 +1,4 @@
+import { authStorage } from '../integration/storage'
 import { createRouter, createWebHistory } from 'vue-router'
 import { defineComponent } from 'vue'
 import type { RouteLocationNormalized } from 'vue-router'
@@ -9,6 +10,8 @@ import { MessagePlugin } from 'tdesign-vue-next'
 import i18n from '@/i18n'
 import { normalizeSettingsSection } from '@/config/settingsRoute'
 import { isToolboxSection, toolboxLocation } from '@/config/toolbox'
+import { integrationContext, integrationRouteAllowed } from '../integration/context'
+import { expireIntegration } from '../integration/bridge'
 
 /** Lite /桌面 WebView 硬刷新时可能只打开 `/`，用 session 记住上次页面以便恢复 */
 const LITE_LAST_PATH_KEY = 'weknora_lite_last_path'
@@ -19,7 +22,7 @@ const LITE_LAST_PATH_KEY = 'weknora_lite_last_path'
 const SettingsRouteOutlet = defineComponent({ name: 'SettingsRouteOutlet', render: () => null })
 
 function isLiteEdition(authStore: ReturnType<typeof useAuthStore>) {
-  return authStore.isLiteMode || localStorage.getItem('weknora_lite_mode') === 'true'
+  return authStore.isLiteMode || authStorage.getItem('weknora_lite_mode') === 'true'
 }
 
 function isLiteSpaDefaultEntry(to: RouteLocationNormalized) {
@@ -42,7 +45,7 @@ function hasPendingOIDCCallback() {
 }
 
 const router = createRouter({
-  history: createWebHistory(import.meta.env.BASE_URL),
+  history: createWebHistory(integrationContext()?.base ?? import.meta.env.BASE_URL),
   routes: [
     {
       path: "/",
@@ -263,14 +266,14 @@ function persistLoginResponse(authStore: ReturnType<typeof useAuthStore>, respon
 }
 
 async function hydrateSessionFromToken(authStore: ReturnType<typeof useAuthStore>) {
-  const token = localStorage.getItem('weknora_token')
+  const token = authStorage.getItem('weknora_token')
   if (!token) return false
 
   if (!authStore.token) {
     authStore.setToken(token)
   }
 
-  const storedRefreshToken = localStorage.getItem('weknora_refresh_token')
+  const storedRefreshToken = authStorage.getItem('weknora_refresh_token')
   if (storedRefreshToken && !authStore.refreshToken) {
     authStore.setRefreshToken(storedRefreshToken)
   }
@@ -286,6 +289,10 @@ let liteDeepLinkRestoreDone = false
 // 路由守卫：检查认证状态和系统初始化状态
 router.beforeEach(async (to, from, next) => {
   const authStore = useAuthStore()
+  if (integrationContext() && !integrationRouteAllowed(to.path)) {
+    next('/platform/knowledge-bases')
+    return
+  }
 
   // OIDC 回跳登录结果依赖 App.vue 在挂载后消费 URL hash。
   // 如果这里先按“未登录”拦截到 /login，会导致回调结果没有机会落盘。
@@ -357,9 +364,10 @@ router.beforeEach(async (to, from, next) => {
         return
       }
 
+      if (integrationContext()) { expireIntegration(); next(false); return }
       if (!autoSetupAttempted) {
         autoSetupAttempted = true
-        localStorage.removeItem('weknora_auto_setup_failed')
+        authStorage.removeItem('weknora_auto_setup_failed')
         try {
           const response = await autoSetup()
           if (response.success) {

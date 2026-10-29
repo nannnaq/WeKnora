@@ -5,6 +5,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useDeploymentCapabilitiesStore } from '@/stores/deploymentCapabilities'
 import type { DeploymentCapabilityKey } from '@/config/deploymentCapabilities'
 import type { QuestionOrigin } from '@/utils/questionOrigin'
+import { integrationContext, integratedMenuPaths } from '../integration/context'
 
 type MenuChild = Record<string, any>
 
@@ -76,6 +77,7 @@ export const useMenuStore = defineStore('menuStore', () => {
     const authStore = useAuthStore()
     const deploymentCapabilities = useDeploymentCapabilitiesStore()
     return menuArr.filter(item => {
+      if (integrationContext() && !integratedMenuPaths.has(item.path)) return false
       if (authStore.isLiteMode && liteHiddenPaths.has(item.path)) {
         return false
       }
